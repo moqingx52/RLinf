@@ -57,6 +57,7 @@ class SupportedModel(Enum):
     DEXBOTIC_PI = ("dexbotic_pi", "embodied")
     CNN_POLICY = ("cnn_policy", "embodied")
     FLOW_POLICY = ("flow_policy", "embodied")
+    DP_POLICY = ("dp_policy", "embodied")
     CMA_POLICY = ("cma", "embodied")
     LINGBOTVLA = ("lingbotvla", "embodied")
 

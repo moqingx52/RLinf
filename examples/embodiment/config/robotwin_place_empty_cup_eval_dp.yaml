@@ -1,9 +1,18 @@
+# Docker 典型布局: /workspace/RLinf, /workspace/RoboTwin, /workspace/models/...
+# 建议启动前:
+#   export REPO_PATH=/workspace/RLinf
+#   export EMBODIED_PATH=/workspace/RLinf/examples/embodiment
+#   export PYTHONPATH=/workspace/RoboTwin:/workspace/RLinf:$PYTHONPATH
+#   export ROBOTWIN_DP_CKPT=/path/to/your.ckpt   # 可选，覆盖默认 ckpt_path
 defaults:
   - env/robotwin_place_empty_cup@env.train
   - env/robotwin_place_empty_cup@env.eval
-  - model/openvla_oft@actor.model
+  - model/dp_policy@actor.model
   - training_backend/fsdp@actor.fsdp_config
   - override hydra/job_logging: stdout
+
+# 与 OpenVLA-OFT 示例一致，便于同一容器内切换任务
+robotwin_root: ${oc.env:ROBOTWIN_ROOT,/workspace/RoboTwin}
 
 hydra:
   run:
@@ -11,7 +20,7 @@ hydra:
   output_subdir: null
   searchpath:
     - file://${oc.env:EMBODIED_PATH}/config/
-    
+
 cluster:
   num_nodes: 1
   component_placement:
@@ -22,26 +31,26 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "robotwin_grpo_openvlaoft_8x4090"
-    logger_backends: ["tensorboard"] # wandb, swanlab
+    experiment_name: "robotwin_eval_dp"
+    logger_backends: ["tensorboard"]
 
   max_epochs: 1000
   max_steps: -1
 
-  only_eval: False
-  val_check_interval: 50
-  save_interval: 50
+  only_eval: True
+  val_check_interval: 20
+  save_interval: 20
 
-  resume_dir: null # Optional: path to a saved checkpoint directory, such as 'checkpoints/global_step_10'. If not None, it will be used to resume training.
-  ckpt_path: null  # Optional: path to a .pt checkpoint. If not None, it will be loaded after the model is instantiated (for evaluation).
+  resume_dir: null
+  ckpt_path: null
 
 algorithm:
   normalize_advantages: True
-  kl_penalty: kl  # how to estimate kl divergence: kl or kl_penalty
-  group_size: 2
+  kl_penalty: kl
+  group_size: 8
 
-  rollout_epoch: 4
-  eval_rollout_epoch: 1 # set eval_rollout_epoch > 0 when enable runner.only_eval or runner.val_check_interval > 0
+  rollout_epoch: 8
+  eval_rollout_epoch: 1
 
   reward_type: action_level
   logprob_type: token_level
@@ -66,17 +75,14 @@ algorithm:
   rewards_lower_bound: 0.5
   rewards_upper_bound: 4.5
 
-  # params for rollout
   sampling_params:
     do_sample: True
     temperature_train: 1.6
-    temperature_eval: -1 # -1 means do_sample=False during evaluation
+    temperature_eval: -1
     top_k: -1
     top_p: 1.0
     repetition_penalty: 1.0
 
-  # length argument for autoregressive sampling
-  # max length means max amount of tokens to generate
   length_params:
     max_new_token: null
     max_length: 512
@@ -84,21 +90,23 @@ algorithm:
 
 env:
   group_name: "EnvGroup"
+  enable_offload: True
 
-  # Override the default values in env/robotwin_place_empty_cup
   train:
-    total_num_envs: 16
+    total_num_envs: 128
     reward_coef: ${algorithm.reward_coef}
     max_episode_steps: 200
     max_steps_per_rollout_epoch: 200
     group_size: ${algorithm.group_size}
-    assets_path: "/workspace/RoboTwin"
+    assets_path: ${robotwin_root}
     seeds_path: ${oc.env:REPO_PATH}/rlinf/envs/robotwin/seeds/train_seeds.json
-
-    enable_offload: True
-
+    center_crop: False
+    task_config:
+      embodiment: [aloha-agilex]
+      camera:
+        collect_wrist_camera: false
   eval:
-    total_num_envs: 16
+    total_num_envs: 128
     auto_reset: True
     ignore_terminations: True
     max_episode_steps: 200
@@ -107,12 +115,16 @@ env:
     group_size: 1
     use_fixed_reset_state_ids: True
     is_eval: True
-    assets_path: "/workspace/RoboTwin"
+    assets_path: ${robotwin_root}
     seeds_path: ${oc.env:REPO_PATH}/rlinf/envs/robotwin/seeds/eval_seeds.json
+    center_crop: False
     video_cfg:
       save_video: True
       video_base_dir: ${runner.logger.log_path}/video/eval
-    enable_offload: True
+    task_config:
+      embodiment: [aloha-agilex]
+      camera:
+        collect_wrist_camera: false
 
 rollout:
   group_name: "RolloutGroup"
@@ -120,53 +132,45 @@ rollout:
   enable_offload: True
   pipeline_stage_num: 1
   model:
-    model_type: "openvla_oft"
-    model_path: ${actor.model.model_path}
+    model_path: ${actor.model.ckpt_path}
     precision: ${actor.model.precision}
 
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 8
-  global_batch_size: 256
+  micro_batch_size: 32
+  global_batch_size: 1024
   seed: 1234
   enable_offload: True
 
-  # Override the default values in model/openvla_oft
   model:
-    model_path: "/workspace/models/RLinf-OpenVLAOFT-RoboTwin-SFT-place_empty_cup" # https://huggingface.co/RLinf/RLinf-OpenVLAOFT-RoboTwin-SFT-place_empty_cup
-    implement_version: "official"
-    model_type: "openvla_oft"
-    value_type: ${algorithm.reward_type}
+    ckpt_path: ${oc.env:ROBOTWIN_DP_CKPT,/workspace/RoboTwin/policy/DP/checkpoints/place_empty_cup/latest.ckpt}
+    num_action_chunks: 6
     action_dim: 14
-    use_proprio: True
-    proprio_dim: 14
-    use_film: False
-
-    num_action_chunks: 25
-    unnorm_key: place_empty_cup_1k
-    center_crop: True
-
-    is_lora: True
-    max_prompt_length: 512
+    n_obs_steps: 3
+    use_dsrl: false
+    precision: "32"
 
   optim:
-    lr: 1.0e-4
-    value_lr: 1.0e-5
+    lr: 2.5e-5
     adam_beta1: 0.9
-    adam_beta2: 0.999
-    adam_eps: 1.0e-05
-    weight_decay: 0.01
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 1e-10
     clip_grad: 1.0
+    total_training_steps: 30000
+    lr_warmup_steps: 1000
+    lr_scheduler: "cosine"
+    num_cycles: 0.5
+    min_lr: 2.5e-6
 
-  # Override the default values in training_backend/fsdp
   fsdp_config:
     strategy: "fsdp"
-    gradient_checkpointing: True
+    gradient_checkpointing: False
     mixed_precision:
-      param_dtype: ${actor.model.precision}
-      reduce_dtype: ${actor.model.precision}
-      buffer_dtype: ${actor.model.precision}
+      param_dtype: float32
+      reduce_dtype: float32
+      buffer_dtype: float32
 
 reward:
   use_reward_model: False

@@ -19,7 +19,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from rlinf.config import SupportedModel
@@ -106,7 +106,10 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             self.target_model.requires_grad_(False)
             self.target_model_initialized = True
 
-        self.use_dsrl = self.cfg.actor.model.get("openpi", {}).get("use_dsrl", False)
+        _m = self.cfg.actor.model
+        self.use_dsrl = OmegaConf.select(_m, "use_dsrl")
+        if self.use_dsrl is None:
+            self.use_dsrl = OmegaConf.select(_m, "openpi.use_dsrl", default=False)
         use_dsrl = self.use_dsrl
         if use_dsrl:
             # DSRL: separate actor/critic encoders into different optimizer groups
@@ -344,7 +347,7 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         use_crossq = self.cfg.algorithm.get("q_head_type", "default") == "crossq"
         bootstrap_type = self.cfg.algorithm.get("bootstrap_type", "standard")
         agg_q = self.cfg.algorithm.get("agg_q", "min")
-        use_dsrl = self.cfg.actor.model.get("openpi", {}).get("use_dsrl", False)
+        use_dsrl = self.use_dsrl
         if use_dsrl:
             num_action_chunks = self.cfg.actor.model.get("num_action_chunks", 1)
             discount = self.cfg.algorithm.gamma**num_action_chunks
