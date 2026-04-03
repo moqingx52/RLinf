@@ -70,6 +70,7 @@ class FSDPModelManager:
         ) and self._cfg.model.get("add_value_head", False):
             self.critic_warmup_steps = self._cfg.optim.critic_warmup_steps
         self.store_requires_grad_param_name = []
+        self._dummy_optimizer_param = None
 
         if cfg.get("tokenizer", {}).get("tokenizer_model", None) is not None:
             self.tokenizer = hf_tokenizer(cfg.tokenizer.tokenizer_model)
@@ -492,6 +493,24 @@ class FSDPModelManager:
                     "betas": betas,
                 }
             )
+        if len(param_groups) == 0:
+            # Frozen models (e.g. dp_policy with use_dsrl=false) have no trainable params;
+            # AdamW rejects an empty param list.
+            self._logger.warning(
+                "[FSDP] No trainable parameters; using a dummy scalar in AdamW for "
+                "frozen / eval-only models."
+            )
+            try:
+                p0 = next(model.parameters())
+                device, dtype = p0.device, p0.dtype
+            except StopIteration:
+                device, dtype = torch.device("cpu"), torch.float32
+            dummy = torch.nn.Parameter(torch.zeros(1, device=device, dtype=dtype))
+            self._dummy_optimizer_param = dummy
+            param_groups.append(
+                {"params": [dummy], "lr": 0.0, "betas": betas}
+            )
+
         optimizer = torch.optim.AdamW(
             param_groups,
             eps=adam_eps,
