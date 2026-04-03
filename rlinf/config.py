@@ -98,11 +98,11 @@ __all__ = ["build_config"]
 def torch_dtype_from_precision(
     precision: Union[int, str, None],
 ) -> Optional[torch.dtype]:
-    if precision in ["bf16", "bf16-mixed"]:
+    if precision in ["bf16", "bf16-mixed", "bfloat16"]:
         return torch.bfloat16
-    elif precision in [16, "16", "fp16", "16-mixed"]:
+    elif precision in [16, "16", "fp16", "16-mixed", "float16"]:
         return torch.float16
-    elif precision in [32, "32", "fp32", "32-true"]:
+    elif precision in [32, "32", "fp32", "32-true", "float32"]:
         return torch.float32
     elif precision in [None, "null"]:
         return None
