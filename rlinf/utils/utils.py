@@ -24,8 +24,9 @@ from typing import Callable, Literal, Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
+
+from rlinf.utils.dtensor_compat import DTensor
 
 from rlinf.scheduler import Worker
 

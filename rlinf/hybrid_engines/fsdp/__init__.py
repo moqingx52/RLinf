@@ -16,10 +16,7 @@
 import torch
 from packaging import version
 
-try:
-    from torch.distributed.tensor import DTensor
-except ImportError:
-    from torch.distributed._tensor import DTensor  # noqa: F401
+from rlinf.utils.dtensor_compat import DTensor  # noqa: F401
 
 if version.parse(torch.__version__) >= version.parse("2.6.0"):
     from torch.distributed.fsdp import (

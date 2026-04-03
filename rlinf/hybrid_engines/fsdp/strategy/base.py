@@ -27,8 +27,9 @@ from torch.distributed.checkpoint.state_dict import (
     set_model_state_dict,
 )
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
+
+from rlinf.utils.dtensor_compat import DTensor
 from torch.optim.lr_scheduler import LRScheduler
 
 from rlinf.hybrid_engines.fsdp import FSDP, FSDPModule

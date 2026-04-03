@@ -21,7 +21,6 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch import nn
-from torch.distributed.tensor import DTensor
 from torch.multiprocessing.reductions import reduce_tensor
 from torch.utils import _pytree
 
@@ -45,6 +44,7 @@ from rlinf.hybrid_engines.fsdp.utils import (
 from rlinf.models import get_model
 from rlinf.models.embodiment.base_policy import ForwardType
 from rlinf.scheduler import Channel, Cluster, CollectiveGroupOptions, Worker
+from rlinf.utils.dtensor_compat import DTensor
 from rlinf.utils.data_iter_utils import (
     get_iterator_k_split,
     get_reverse_idx,

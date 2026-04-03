@@ -21,8 +21,7 @@ from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     set_model_state_dict,
 )
-from torch.distributed.tensor import DTensor
-
+from rlinf.utils.dtensor_compat import DTensor
 from rlinf.utils.placement import ModelParallelComponentPlacement
 from rlinf.utils.utils import (
     retrieve_model_state_dict_in_cpu,
