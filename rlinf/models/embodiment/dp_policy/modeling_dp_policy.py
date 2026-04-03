@@ -15,16 +15,44 @@ from omegaconf import DictConfig, OmegaConf
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 
 
+def _load_dp_policy_from_ckpt_payload(ckpt_path: str, device: torch.device):
+    """与 RoboTwin `policy.DP.dp_model.load_diffusion_policy_from_checkpoint` 等价，供旧版 dp_model 无该符号时使用。"""
+    import dill
+    import hydra
+    from diffusion_policy.workspace.robotworkspace import RobotWorkspace
+
+    with open(ckpt_path, "rb") as f:
+        payload = torch.load(f, pickle_module=dill, map_location="cpu")
+    cfg = payload["cfg"]
+    cls = hydra.utils.get_class(cfg._target_)
+    workspace = cls(cfg, output_dir=None)
+    workspace: RobotWorkspace
+    workspace.load_payload(payload, exclude_keys=None, include_keys=None)
+    policy = workspace.model
+    if cfg.training.use_ema:
+        policy = workspace.ema_model
+    policy.to(torch.device(str(device)))
+    policy.eval()
+    return policy
+
+
 def _load_robotwin_dp_expert(ckpt_path: str, device: torch.device):
     try:
         from policy.DP.dp_model import load_diffusion_policy_from_checkpoint
-    except ImportError as e:
+
+        return load_diffusion_policy_from_checkpoint(
+            ckpt_path, map_location=str(device)
+        )
+    except ImportError:
+        pass
+    try:
+        return _load_dp_policy_from_ckpt_payload(ckpt_path, device)
+    except Exception as e:
         raise ImportError(
-            "无法导入 RoboTwin `policy.DP.dp_model`。请将 RoboTwin 仓库根目录加入 PYTHONPATH。"
+            "无法从 RoboTwin DP checkpoint 加载策略：请确认 RoboTwin 在 PYTHONPATH 上，且已安装 "
+            "`diffusion_policy`；或将本仓库中的 `policy/DP/dp_model.py`（含 "
+            "`load_diffusion_policy_from_checkpoint`）同步到服务器。"
         ) from e
-    return load_diffusion_policy_from_checkpoint(
-        ckpt_path, map_location=str(device)
-    )
 
 
 def _rlinf_to_dp_timestep(main_images, states):
