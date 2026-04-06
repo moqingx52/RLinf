@@ -10,7 +10,7 @@ heartbeat_interval_seconds: 20
 # client 模式下启动时强校验（task/state/camera/horizon + check_seeds）
 client_validate_at_init: true
 expected_state_dim: 14
-client_validate_embodiment: false
+client_validate_embodiment: true
 client_require_play_once_success: false
 
 auto_reset: False

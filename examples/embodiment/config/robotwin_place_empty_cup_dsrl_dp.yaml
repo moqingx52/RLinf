@@ -107,7 +107,7 @@ env:
   train:
     total_num_envs: 16
     reward_coef: ${algorithm.reward_coef}
-    # 须为 actor.model.num_action_chunks(6) 的倍数
+    # 须为 actor.model.num_action_chunks(6) 的倍数；与 task_config.step_lim 一致（避免 client 校验 200/198 漂移）
     max_episode_steps: 198
     max_steps_per_rollout_epoch: 198
     auto_reset: False
@@ -115,7 +115,11 @@ env:
     assets_path: ${robotwin_root}
     seeds_path: ${oc.env:REPO_PATH}/rlinf/envs/robotwin/seeds/train_seeds.json
     center_crop: False
+    backend: client
+    server_addr: ${oc.env:ROBOTWIN_SERVER_ADDR,127.0.0.1:8765}
+    client_validate_embodiment: true
     task_config:
+      step_lim: 198
       embodiment: [aloha-agilex]
       camera:
         collect_wrist_camera: false
@@ -132,10 +136,14 @@ env:
     assets_path: ${robotwin_root}
     seeds_path: ${oc.env:REPO_PATH}/rlinf/envs/robotwin/seeds/eval_seeds.json
     center_crop: False
+    backend: client
+    server_addr: ${oc.env:ROBOTWIN_SERVER_ADDR,127.0.0.1:8765}
+    client_validate_embodiment: true
     video_cfg:
       save_video: True
       video_base_dir: ${runner.logger.log_path}/video/eval
     task_config:
+      step_lim: 198
       embodiment: [aloha-agilex]
       camera:
         collect_wrist_camera: false

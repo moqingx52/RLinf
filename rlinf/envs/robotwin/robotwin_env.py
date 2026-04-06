@@ -14,7 +14,7 @@
 
 import json
 import os
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import gymnasium as gym
 import numpy as np
@@ -94,6 +94,7 @@ class RoboTwinEnv(gym.Env):
                 env_seeds=env_seeds,
                 request_timeout=timeout,
                 heartbeat_interval=hb,
+                task_config=OmegaConf.to_container(self.cfg.task_config, resolve=True),
             )
             self._validate_remote_client_bridge()
             return
@@ -139,6 +140,25 @@ class RoboTwinEnv(gym.Env):
                         f"embodiment mismatch remote={schema.get('embodiment')!r} "
                         f"local={tc.get('embodiment')!r}"
                     )
+            if schema.get("planner_backend") != tc.get("planner_backend"):
+                raise ValueError(
+                    f"planner_backend mismatch remote={schema.get('planner_backend')!r} "
+                    f"local={tc.get('planner_backend')!r}"
+                )
+            ln_r, ln_c = schema.get("language_num"), tc.get("language_num")
+            if ln_r is not None and ln_c is not None and int(ln_r) != int(ln_c):
+                raise ValueError(
+                    f"language_num mismatch remote={ln_r} local={ln_c}"
+                )
+
+            def _norm_cfg(x: Any) -> str:
+                return json.dumps(x, sort_keys=True, default=str)
+
+            dr_r = schema.get("domain_randomization")
+            dr_c = tc.get("domain_randomization")
+            if dr_r is not None or dr_c is not None:
+                if _norm_cfg(dr_r) != _norm_cfg(dr_c):
+                    raise ValueError("domain_randomization mismatch vs remote obs_schema")
             r_step = schema.get("step_lim")
             if r_step is not None and int(r_step) != int(self.cfg.max_episode_steps):
                 raise ValueError(

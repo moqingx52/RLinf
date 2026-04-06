@@ -76,7 +76,7 @@ def _recvn(sock: socket.socket, n: int) -> bytes:
 
 
 def _send_frame(sock: socket.socket, meta: dict[str, Any], blob: bytes = b"") -> None:
-    body = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+    body = json.dumps(meta, separators=(",", ":"), default=str).encode("utf-8")
     sock.sendall(struct.pack(">I", len(body)) + body + struct.pack(">I", len(blob)) + blob)
 
 
@@ -126,9 +126,11 @@ class ClientVectorEnv:
         env_seeds: Optional[list[int]],
         request_timeout: float = 180.0,
         heartbeat_interval: float = 20.0,
+        task_config: Optional[dict[str, Any]] = None,
     ):
         self.n_envs = n_envs
         self.env_seeds = list(env_seeds) if env_seeds is not None else None
+        self._task_config = task_config
         self._host = host
         self._port = port
         self._timeout = float(request_timeout)
@@ -208,11 +210,13 @@ class ClientVectorEnv:
 
     def _call_init(self) -> None:
         with self._call_lock:
-            meta = self._call_unlocked(
-                "init",
-                n_envs=self.n_envs,
-                env_seeds=self.env_seeds,
-            )
+            init_kw: dict[str, Any] = {
+                "n_envs": self.n_envs,
+                "env_seeds": self.env_seeds,
+            }
+            if self._task_config is not None:
+                init_kw["task_config"] = self._task_config
+            meta = self._call_unlocked("init", **init_kw)
         self.remote_obs_schema = meta.get("obs_schema")
 
     def _remote_close_socket_only(self) -> None:
@@ -244,13 +248,13 @@ class ClientVectorEnv:
                 self._call_unlocked("reset")
 
     def _run_step_with_recovery(self, actions_list: list) -> tuple:
+        """Do not auto-recreate after ``step`` (would replay actions on a fresh env)."""
         try:
             meta = self._call("step", actions=actions_list)
         except RemoteEnvError as e:
             if e.should_recreate_env:
-                self._recreate_remote_full(replay_reset=None)
-                meta = self._call("step", actions=actions_list)
-            elif e.can_retry:
+                raise
+            if e.can_retry:
                 meta = self._call("step", actions=actions_list)
             else:
                 raise
@@ -296,9 +300,8 @@ class ClientVectorEnv:
             meta = self._call("get_obs")
         except RemoteEnvError as e:
             if e.should_recreate_env:
-                self._recreate_remote_full(replay_reset=None)
-                meta = self._call("get_obs")
-            elif e.can_retry:
+                raise
+            if e.can_retry:
                 meta = self._call("get_obs")
             else:
                 raise
