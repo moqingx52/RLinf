@@ -1,13 +1,26 @@
 env_type: robotwin
 total_num_envs: null
 
+# local: 本进程 import RoboTwin VectorEnv（依赖与 RoboTwin 一致）
+# client: 仅 TCP 客户端，仿真在独立环境运行：先启动 RoboTwin/script/robotwin_env_server.py
+backend: local
+server_addr: "127.0.0.1:8765"
+request_timeout: 300
+heartbeat_interval_seconds: 20
+# client 模式下启动时强校验（task/state/camera/horizon + check_seeds）
+client_validate_at_init: true
+expected_state_dim: 14
+client_validate_embodiment: false
+client_require_play_once_success: false
+
 auto_reset: False
 ignore_terminations: False
 
 reward_coef: 1.0
 use_custom_reward: True
 use_rel_reward: True
-center_crop: True
+# DP 单头桥接阶段建议 false，与 policy/DP/rlinf_adapter 一致
+center_crop: False
 
 seed: 0
 group_size: 1
@@ -27,6 +40,11 @@ video_cfg:
 
 enable_offload: False
 
+# 多 EnvWorker：每个进程一个 server 端口，在训练顶层 yaml 里为 env.train.override_cfgs 按 rank 写 server_addr，例如:
+# override_cfgs:
+#   - { server_addr: "127.0.0.1:8765" }
+#   - { server_addr: "127.0.0.1:8766" }
+
 task_config:
   task_name: place_empty_cup
   step_lim: 200
@@ -37,6 +55,7 @@ task_config:
   episode_num: 100
   use_seed: false
   save_freq: 15
+  # DP 官方示例常用 aloha-agilex + 14 维动作；与 actor.model.action_dim / expected_state_dim 对齐
   embodiment: [piper, piper, 0.6]
   language_num: 100
   domain_randomization:

@@ -77,17 +77,86 @@ class RoboTwinEnv(gym.Env):
 
     def _init_env(self):
         mp.set_start_method("spawn", force=True)
+        env_seeds = self.reset_state_ids.tolist()
+        backend = self.cfg.get("backend", "local")
+
+        if backend == "client":
+            server_addr = self.cfg.get("server_addr", "127.0.0.1:8765")
+            from rlinf.envs.robotwin.robotwin_client import ClientVectorEnv, parse_server_addr
+
+            host, port = parse_server_addr(server_addr)
+            timeout = float(self.cfg.get("request_timeout", 180.0))
+            hb = float(self.cfg.get("heartbeat_interval_seconds", 20.0))
+            self.venv = ClientVectorEnv(
+                host=host,
+                port=port,
+                n_envs=self.num_envs,
+                env_seeds=env_seeds,
+                request_timeout=timeout,
+                heartbeat_interval=hb,
+            )
+            self._validate_remote_client_bridge()
+            return
+
         os.environ["ASSETS_PATH"] = self.cfg.assets_path
 
         from robotwin.envs.vector_env import VectorEnv
-
-        env_seeds = self.reset_state_ids.tolist()
 
         self.venv = VectorEnv(
             task_config=OmegaConf.to_container(self.cfg.task_config, resolve=True),
             n_envs=self.num_envs,
             env_seeds=env_seeds,
         )
+
+    def _validate_remote_client_bridge(self) -> None:
+        """Fail-fast: task / state / camera / horizon vs server ``obs_schema`` + ``check_seeds``."""
+        if not self.cfg.get("client_validate_at_init", True):
+            return
+        v = self.venv
+        schema = getattr(v, "remote_obs_schema", None)
+        if schema:
+            if schema.get("task_name") != self.task_name:
+                raise ValueError(
+                    f"remote task_name {schema.get('task_name')!r} != cfg {self.task_name!r}"
+                )
+            exp_state = int(self.cfg.get("expected_state_dim", 14))
+            remote_sd = int(schema.get("state_dim", -1))
+            if remote_sd != exp_state:
+                raise ValueError(
+                    f"remote state_dim {remote_sd} != expected_state_dim {exp_state} "
+                    "(DP / embodiment 与 RLinf actor.action_dim 需一致)"
+                )
+            tc = OmegaConf.to_container(self.cfg.task_config, resolve=True)
+            cam = tc.get("camera") or {}
+            rw = bool(cam.get("collect_wrist_camera", False))
+            if bool(schema.get("collect_wrist_camera")) != rw:
+                raise ValueError(
+                    "collect_wrist_camera mismatch between RLinf yaml and remote server"
+                )
+            if self.cfg.get("client_validate_embodiment", False):
+                if str(schema.get("embodiment")) != str(tc.get("embodiment")):
+                    raise ValueError(
+                        f"embodiment mismatch remote={schema.get('embodiment')!r} "
+                        f"local={tc.get('embodiment')!r}"
+                    )
+            r_step = schema.get("step_lim")
+            if r_step is not None and int(r_step) != int(self.cfg.max_episode_steps):
+                raise ValueError(
+                    f"remote step_lim {r_step} != cfg max_episode_steps {self.cfg.max_episode_steps}"
+                )
+        seeds = self.reset_state_ids.tolist()
+        if len(seeds) != self.num_envs:
+            raise ValueError(
+                f"seed count {len(seeds)} != num_envs {self.num_envs}"
+            )
+        results = self.venv.check_seeds(seeds)
+        for i, r in enumerate(results):
+            if not r.get("setup_demo_success"):
+                raise ValueError(f"check_seeds[{i}] setup_demo_failed: {r}")
+            if self.cfg.get("client_require_play_once_success", False) and not r.get(
+                "play_once_success"
+            ):
+                raise ValueError(f"check_seeds[{i}] play_once_success=False: {r}")
 
     @property
     def device(self):
