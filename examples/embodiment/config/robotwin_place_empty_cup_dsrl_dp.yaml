@@ -1,4 +1,5 @@
-# Docker: 同 eval_dp，需 REPO_PATH / EMBODIED_PATH / PYTHONPATH（见 robotwin_place_empty_cup_eval_dp.yaml 头部注释）
+# Docker: 需 REPO_PATH / EMBODIED_PATH。DP 推理默认走 remote（robotwin_dp_server），RLinf 可不装 RoboTwin 的 diffusers/peft。
+# 若改 local expert，需 PYTHONPATH 含 RoboTwin 且解决依赖冲突（见 run.md）。
 defaults:
   - env/robotwin_place_empty_cup@env.train
   - env/robotwin_place_empty_cup@env.eval
@@ -171,6 +172,8 @@ actor:
 
   model:
     ckpt_path: ${oc.env:ROBOTWIN_DP_CKPT,/workspace/RoboTwin/policy/DP/checkpoints/place_empty_cup/latest.ckpt}
+    expert_backend: ${oc.env:RLINF_DP_EXPERT_BACKEND,remote}
+    dp_server_addr: ${oc.env:ROBOTWIN_DP_SERVER_ADDR,127.0.0.1:8767}
     num_action_chunks: 6
     action_dim: 14
     n_obs_steps: 3

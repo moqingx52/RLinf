@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig, OmegaConf
@@ -65,9 +67,57 @@ def _rlinf_to_dp_timestep(main_images, states):
     return rlinf_main_state_to_dp_timestep(main_images, states)
 
 
+class RemoteDpExpertModule(torch.nn.Module):
+    """Frozen DP on ``robotwin_dp_server``; RLinf 进程不 import diffusers/peft。"""
+
+    def __init__(self, server_addr: str, ckpt_path: str, torch_device: torch.device):
+        super().__init__()
+        self.register_parameter(
+            "_placeholder",
+            nn.Parameter(
+                torch.zeros(1, device=torch_device, dtype=torch.float32),
+                requires_grad=False,
+            ),
+        )
+        from rlinf.envs.robotwin.dp_remote_client import DpRemoteClient
+
+        self._client = DpRemoteClient(server_addr)
+        meta = self._client.init(ckpt_path)
+        self.n_obs_steps = int(meta["n_obs_steps"])
+        self.horizon = int(meta["horizon"])
+        self.action_dim = int(meta["action_dim"])
+        self.n_action_steps = int(meta["n_action_steps"])
+
+    def predict_action(self, obs_dict, init_noise=None):
+        raise RuntimeError(
+            "RemoteDpExpertModule 仅用于远程推理；请使用 DpPolicyForRL 的 remote 分支。"
+        )
+
+    def remote_predict(
+        self,
+        main_images: torch.Tensor,
+        states: torch.Tensor,
+        init_noise: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        main_np = main_images.detach().cpu().numpy()
+        st_np = states.detach().cpu().numpy()
+        noise_np = None
+        if init_noise is not None:
+            noise_np = init_noise.detach().cpu().numpy()
+        out_np = self._client.predict(main_np, st_np, noise_np)
+        return torch.from_numpy(np.ascontiguousarray(out_np)).to(
+            device=main_images.device, dtype=torch.float32
+        )
+
+    def reset_remote_history(self) -> None:
+        self._client.reset_history()
+
+
 @dataclass
 class DpPolicyConfig:
     ckpt_path: str = ""
+    expert_backend: str = "local"
+    dp_server_addr: str = ""
     n_obs_steps: int = 3
     num_action_chunks: int = 6
     action_dim: int = 14
@@ -88,10 +138,23 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         if not cfg.ckpt_path:
             raise ValueError("dp_policy 需要在配置中设置 ckpt_path（RoboTwin DP .ckpt）。")
 
-        expert = _load_robotwin_dp_expert(cfg.ckpt_path, device)
-        self.add_module("dp_expert", expert)
-        for p in self.dp_expert.parameters():
-            p.requires_grad = False
+        backend = (cfg.expert_backend or "local").strip().lower()
+        self._expert_backend = backend
+        if backend == "remote":
+            addr = (cfg.dp_server_addr or "").strip() or os.environ.get(
+                "ROBOTWIN_DP_SERVER_ADDR", ""
+            ).strip()
+            if not addr:
+                raise ValueError(
+                    "expert_backend=remote 时需要配置 dp_server_addr 或环境变量 ROBOTWIN_DP_SERVER_ADDR"
+                )
+            expert = RemoteDpExpertModule(addr, cfg.ckpt_path, device)
+            self.add_module("dp_expert", expert)
+        else:
+            expert = _load_robotwin_dp_expert(cfg.ckpt_path, device)
+            self.add_module("dp_expert", expert)
+            for p in self.dp_expert.parameters():
+                p.requires_grad = False
 
         self.n_obs_steps = int(getattr(expert, "n_obs_steps", cfg.n_obs_steps))
         self.diffusion_horizon = int(expert.horizon)
@@ -154,6 +217,8 @@ class DpPolicyForRL(nn.Module, BasePolicy):
     def reset_obs_history(self):
         self._hist_head = None
         self._hist_state = None
+        if self._expert_backend == "remote":
+            self.dp_expert.reset_remote_history()
 
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         if forward_type == ForwardType.SAC:
@@ -289,18 +354,6 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         del kwargs  # 预留
         main = env_obs["main_images"]
         states = env_obs["states"]
-        step = _rlinf_to_dp_timestep(main, states)
-        expert_dev = next(self.dp_expert.parameters()).device
-        exp_dtype = next(self.dp_expert.parameters()).dtype
-
-        head = step["head_cam"].to(device=expert_dev, dtype=torch.float32)
-        st = step["agent_pos"].to(device=expert_dev, dtype=torch.float32)
-        self._update_history(head, st)
-
-        obs_dict = {
-            "head_cam": self._hist_head.to(dtype=exp_dtype),
-            "agent_pos": self._hist_state.to(dtype=exp_dtype),
-        }
 
         init_noise = None
         noise_flat = None
@@ -315,13 +368,34 @@ class DpPolicyForRL(nn.Module, BasePolicy):
                 noise_flat.shape[0],
                 self.diffusion_horizon,
                 self.diffusion_action_dim,
-            ).to(dtype=exp_dtype, device=expert_dev)
+            ).to(dtype=torch.float32, device=main.device)
 
-        out = self.dp_expert.predict_action(obs_dict, init_noise=init_noise)
-        actions = out["action"]
-        chunk_actions = actions.reshape(
-            actions.shape[0], self.exec_action_steps, self.diffusion_action_dim
-        )
+        if self._expert_backend == "remote":
+            chunk_actions = self.dp_expert.remote_predict(main, states, init_noise)
+        else:
+            step = _rlinf_to_dp_timestep(main, states)
+            expert_dev = next(self.dp_expert.parameters()).device
+            exp_dtype = next(self.dp_expert.parameters()).dtype
+
+            head = step["head_cam"].to(device=expert_dev, dtype=torch.float32)
+            st = step["agent_pos"].to(device=expert_dev, dtype=torch.float32)
+            self._update_history(head, st)
+
+            obs_dict = {
+                "head_cam": self._hist_head.to(dtype=exp_dtype),
+                "agent_pos": self._hist_state.to(dtype=exp_dtype),
+            }
+
+            in_noise = (
+                init_noise.to(device=expert_dev, dtype=exp_dtype)
+                if init_noise is not None
+                else None
+            )
+            out = self.dp_expert.predict_action(obs_dict, init_noise=in_noise)
+            actions = out["action"]
+            chunk_actions = actions.reshape(
+                actions.shape[0], self.exec_action_steps, self.diffusion_action_dim
+            )
 
         if self.use_dsrl and noise_logprob is not None:
             prev_logprobs = noise_logprob.unsqueeze(-1).unsqueeze(-1).expand_as(

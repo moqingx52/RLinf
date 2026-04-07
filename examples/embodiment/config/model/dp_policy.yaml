@@ -1,8 +1,13 @@
-# dp_policy：需将 RoboTwin 根目录加入 PYTHONPATH，例如:
-#   export PYTHONPATH=/workspace/RoboTwin:/workspace/RLinf:$PYTHONPATH
+# dp_policy
+# - local：本进程加载 DP（需 PYTHONPATH 含 RoboTwin，且 diffusers/peft 等与 RoboTwin 一致）
+# - remote：连接 RoboTwin/script/robotwin_dp_server.py，RLinf 不 import diffusion_policy/diffusers
 model_type: "dp_policy"
 
-# DP 权重：优先读环境变量 ROBOTWIN_DP_CKPT，否则使用下方默认路径（Docker /workspace 布局）
+expert_backend: ${oc.env:RLINF_DP_EXPERT_BACKEND,local}
+# remote 时必填（或与 ROBOTWIN_DP_SERVER_ADDR 二选一由代码读取环境变量）
+dp_server_addr: ${oc.env:ROBOTWIN_DP_SERVER_ADDR,}
+
+# DP 权重：local 为本地路径；remote 为服务端 init 加载路径（需服务器可读）
 ckpt_path: ${oc.env:ROBOTWIN_DP_CKPT,/workspace/RoboTwin/policy/DP/checkpoints/place_empty_cup/latest.ckpt}
 
 precision: "32"
