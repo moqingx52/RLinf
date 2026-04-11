@@ -79,7 +79,7 @@ class RemoteDpExpertModule(torch.nn.Module):
                 requires_grad=False,
             ),
         )
-        from rlinf.envs.robotwin.dp_remote_client import DpRemoteClient
+        from rlinf.models.embodiment.robotwin_dp_remote_client import DpRemoteClient
 
         self._client = DpRemoteClient(server_addr)
         meta = self._client.init(ckpt_path)
@@ -416,8 +416,9 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         else:
             prev_values = torch.zeros_like(chunk_actions[..., :1])
 
+        flat_chunk = chunk_actions.reshape(chunk_actions.shape[0], -1).contiguous()
         forward_inputs = {
-            "action": actions.reshape(actions.shape[0], -1).contiguous(),
+            "action": flat_chunk,
             "main_images": main,
             "states": states,
         }
@@ -438,13 +439,13 @@ def get_model(cfg: DictConfig, torch_dtype=torch.float32):
     raw = OmegaConf.to_container(cfg, resolve=True)
     mcfg = DpPolicyConfig()
     skip = {"model_type", "precision", "is_lora", "lora_rank", "lora_path"}
-    nested = raw.get("dp_policy")
+    nested = raw.get("dp_policy") or raw.get("robotwin_dp_dsrl")
     if isinstance(nested, dict):
         for k, v in nested.items():
             if hasattr(mcfg, k):
                 setattr(mcfg, k, v)
     for k, v in raw.items():
-        if k in skip or k == "dp_policy":
+        if k in skip or k in ("dp_policy", "robotwin_dp_dsrl"):
             continue
         if hasattr(mcfg, k):
             setattr(mcfg, k, v)

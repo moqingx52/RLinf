@@ -1,4 +1,4 @@
-# dp_policy
+# dp_policy（与 model/robotwin_dp_dsrl.yaml 共享实现；新配置请优先用 robotwin_dp_dsrl）
 # - local：本进程加载 DP（需 PYTHONPATH 含 RoboTwin，且 diffusers/peft 等与 RoboTwin 一致）
 # - remote：连接 RoboTwin/script/robotwin_dp_server.py，RLinf 不 import diffusion_policy/diffusers
 model_type: "dp_policy"

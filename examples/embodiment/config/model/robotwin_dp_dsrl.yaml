@@ -1,0 +1,25 @@
+# RoboTwin Diffusion Policy（冻结）+ DSRL 高斯噪声头 + SAC/Q。
+# 与 model/dp_policy.yaml 等价字段；请优先用本 model_type 以免与 OpenVLA/OpenPI 混淆。
+model_type: "robotwin_dp_dsrl"
+
+expert_backend: ${oc.env:RLINF_DP_EXPERT_BACKEND,remote}
+dp_server_addr: ${oc.env:ROBOTWIN_DP_SERVER_ADDR,}
+
+ckpt_path: ${oc.env:ROBOTWIN_DP_CKPT,/workspace/RoboTwin/policy/DP/checkpoints/place_empty_cup/latest.ckpt}
+
+precision: "32"
+
+num_action_chunks: 6
+action_dim: 14
+n_obs_steps: 3
+
+is_lora: false
+lora_rank: 32
+
+use_dsrl: true
+
+dsrl_state_dim: 14
+dsrl_image_latent_dim: 64
+dsrl_state_latent_dim: 64
+dsrl_hidden_dims: [128, 128, 128]
+dsrl_num_q_heads: 10
