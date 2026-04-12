@@ -14,12 +14,15 @@
 
 import logging
 from enum import Enum, auto
+from typing import Optional
 
 from omegaconf import DictConfig
 
 from rlinf.scheduler import (
     Cluster,
     ComponentPlacement,
+    FlexiblePlacementStrategy,
+    NodePlacementStrategy,
     PackedPlacementStrategy,
 )
 
@@ -42,6 +45,153 @@ class HybridComponentPlacement(ComponentPlacement):
         """
         super().__init__(config, cluster)
         self._placement_mode = PlacementMode.HYBRID
+        self._maybe_shrink_embodied_placement_for_small_parallel_envs(config)
+
+    @staticmethod
+    def _largest_valid_embodied_world_size(
+        configured_ws: int,
+        *,
+        train_total: Optional[int],
+        eval_total: Optional[int],
+        train_constraints_active: bool,
+        eval_constraints_active: bool,
+        stage_num: int,
+        train_group_size: int,
+        eval_group_size: int,
+    ) -> Optional[int]:
+        """Largest g in [1, configured_ws] such that train/eval env counts shard evenly."""
+        for g in range(configured_ws, 0, -1):
+            ok = True
+            if train_constraints_active:
+                assert train_total is not None
+                if train_total % g != 0:
+                    ok = False
+                else:
+                    q = train_total // g // stage_num
+                    if q < 1 or q % train_group_size != 0:
+                        ok = False
+            if ok and eval_constraints_active:
+                assert eval_total is not None
+                if eval_total % g != 0:
+                    ok = False
+                else:
+                    q = eval_total // g // stage_num
+                    if q < 1 or q % eval_group_size != 0:
+                        ok = False
+            if ok:
+                return g
+        return None
+
+    def _filter_rank_map_to_num_processes(self, rank_map, num_processes: int):
+        """Keep only process ranks < num_processes (continuous 0..N-1 layout)."""
+        new_map = {}
+        for res_key, proc_ranks in rank_map.items():
+            kept = [p for p in proc_ranks if p < num_processes]
+            if kept:
+                new_map[res_key] = kept
+        return new_map
+
+    def _slice_shared_placement_strategies(self, shared_components: list[str], new_ws: int):
+        """Replace placement strategies for components that shared the same strategy object."""
+        template = self._placements[shared_components[0]]
+        if isinstance(template, FlexiblePlacementStrategy):
+            hlist = template._hardware_ranks_list[:new_ws]
+            new_strategy = FlexiblePlacementStrategy(
+                hlist, node_group_label=template._node_group_labels
+            )
+        elif isinstance(template, NodePlacementStrategy):
+            nr = template._node_ranks[:new_ws]
+            new_strategy = NodePlacementStrategy(
+                nr, node_group_label=template._node_group_labels
+            )
+        else:
+            raise AssertionError(
+                "Shrinking embodied placement is only implemented for "
+                "FlexiblePlacementStrategy or NodePlacementStrategy; got "
+                f"{type(template)}. Reduce cluster.component_placement manually or increase "
+                "total_num_envs."
+            )
+
+        rank_map = self._component_rank_map[shared_components[0]]
+        new_rank_map = self._filter_rank_map_to_num_processes(rank_map, new_ws)
+        for c in shared_components:
+            self._placements[c] = new_strategy
+            self._component_world_size[c] = new_ws
+            self._component_rank_map[c] = new_rank_map
+
+    def _maybe_shrink_embodied_placement_for_small_parallel_envs(self, config: DictConfig):
+        """Shrink shared env/rollout/actor placement when total_num_envs is small.
+
+        With ``env, rollout, actor: all`` on many GPUs, a small ``total_num_envs`` would
+        otherwise yield zero envs per worker. We lower the worker count for all components
+        that share the same placement object so divisibility and CommMapper constraints hold.
+        """
+        if getattr(config.runner, "task_type", None) != "embodied":
+            return
+        if "env" not in self._components:
+            return
+        shrink = getattr(config.cluster, "shrink_embodied_placement", True)
+        if not shrink:
+            return
+
+        configured_ws = self._component_world_size["env"]
+        stage_num = config.rollout.pipeline_stage_num
+        train_group = int(config.env.train.group_size)
+        eval_group = int(config.env.eval.group_size)
+
+        train_constraints = not config.runner.only_eval
+        eval_constraints = (
+            config.runner.val_check_interval > 0 or config.runner.only_eval
+        )
+        train_total = (
+            int(config.env.train.total_num_envs) if train_constraints else None
+        )
+        eval_total = int(config.env.eval.total_num_envs) if eval_constraints else None
+
+        effective = self._largest_valid_embodied_world_size(
+            configured_ws,
+            train_total=train_total,
+            eval_total=eval_total,
+            train_constraints_active=train_constraints,
+            eval_constraints_active=eval_constraints,
+            stage_num=stage_num,
+            train_group_size=train_group,
+            eval_group_size=eval_group,
+        )
+        if effective is None:
+            return
+        if effective >= configured_ws:
+            return
+
+        env_strategy = self._placements["env"]
+        full_env_hlist = None
+        if isinstance(env_strategy, FlexiblePlacementStrategy):
+            full_env_hlist = [list(x) for x in env_strategy._hardware_ranks_list]
+        shared = [c for c in self._components if self._placements[c] is env_strategy]
+        self._slice_shared_placement_strategies(shared, effective)
+
+        # Separate YAML entries produce distinct strategy objects with the same layout; align those too.
+        if full_env_hlist is not None:
+            for c in ("rollout", "actor"):
+                if c not in self._components or c in shared:
+                    continue
+                if self._component_world_size.get(c) != configured_ws:
+                    continue
+                st = self._placements[c]
+                if not isinstance(st, FlexiblePlacementStrategy):
+                    continue
+                if [list(x) for x in st._hardware_ranks_list] != full_env_hlist:
+                    continue
+                self._slice_shared_placement_strategies([c], effective)
+
+        logging.getLogger(__name__).info(
+            "Embodied placement: shrunk env/rollout/actor world size from %s to %s "
+            "(shared components %s) so small total_num_envs divides evenly. "
+            "Set cluster.shrink_embodied_placement=false to disable.",
+            configured_ws,
+            effective,
+            shared,
+        )
 
 
 class ModelParallelComponentPlacement(ComponentPlacement):
