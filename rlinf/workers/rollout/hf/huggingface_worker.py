@@ -14,7 +14,7 @@
 
 import copy
 import gc
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import numpy as np
 import torch
@@ -238,10 +238,32 @@ class MultiStepRolloutWorker(Worker):
             dst_rank=self._rank,
         )
 
+    @staticmethod
+    def _unwrap_env_for_predict(
+        env_in: dict[str, Any],
+    ) -> tuple[dict[str, Any], Optional[torch.Tensor]]:
+        """Env worker sends ``{"obs": ..., "dp_history_reset_mask": ...}``; bootstrap may send raw obs only."""
+        if (
+            isinstance(env_in, dict)
+            and "obs" in env_in
+            and isinstance(env_in["obs"], dict)
+        ):
+            return env_in["obs"], env_in.get("dp_history_reset_mask")
+        return env_in, None
+
+    def _maybe_reset_dp_history(self, dp_mask: Optional[torch.Tensor]) -> None:
+        if dp_mask is None or not isinstance(dp_mask, torch.Tensor) or not dp_mask.any():
+            return
+        for model in (self.hf_model, self.expert_model):
+            if model is not None and hasattr(model, "reset_obs_history"):
+                model.reset_obs_history(env_mask=dp_mask)
+
     @Worker.timer("predict")
     def predict(
-        self, env_obs: dict[str, Any], mode: Literal["train", "eval"] = "train"
+        self, env_in: dict[str, Any], mode: Literal["train", "eval"] = "train"
     ) -> tuple[torch.Tensor, dict[str, Any]]:
+        env_obs, dp_mask = self._unwrap_env_for_predict(env_in)
+        self._maybe_reset_dp_history(dp_mask)
         kwargs = (
             self._train_sampling_params
             if mode == "train"
@@ -357,7 +379,7 @@ class MultiStepRolloutWorker(Worker):
         for _ in range(self.n_train_chunk_steps):
             for _ in range(self.num_pipeline_stages):
                 env_output = await self.recv_env_output(input_channel)
-                actions, result = self.predict(env_output["obs"])
+                actions, result = self.predict(env_output)
 
                 save_flags = None
                 if result.get("expert_label_flag", False):
@@ -389,7 +411,7 @@ class MultiStepRolloutWorker(Worker):
                 self.send_rollout_result(output_channel, rollout_result, mode="train")
         for _ in range(self.num_pipeline_stages):
             env_output = await self.recv_env_output(input_channel)
-            actions, result = self.predict(env_output["obs"])
+            actions, result = self.predict(env_output)
 
             rollout_result = RolloutResult(
                 actions=actions,
@@ -429,7 +451,7 @@ class MultiStepRolloutWorker(Worker):
             for _ in range(self.n_eval_chunk_steps):
                 for _ in range(self.num_pipeline_stages):
                     env_output = await self.recv_env_output(input_channel, mode="eval")
-                    actions, _ = self.predict(env_output["obs"], mode="eval")
+                    actions, _ = self.predict(env_output, mode="eval")
                     self.send_chunk_actions(output_channel, actions, mode="eval")
 
         if self.enable_offload:
@@ -547,7 +569,24 @@ class MultiStepRolloutWorker(Worker):
             ]
             merged_final_obs = _merge_obs_dicts(final_obs_or_obs)
 
-        return {"obs": merged_obs, "final_obs": merged_final_obs}
+        merged_dp_mask: torch.Tensor | None = None
+        if any(obs_batch.get("dp_history_reset_mask") is not None for obs_batch in obs_batches):
+            mask_parts: list[torch.Tensor] = []
+            for obs_batch, obs_dict in zip(obs_batches, obs_dicts):
+                m = obs_batch.get("dp_history_reset_mask")
+                bsz = HuggingfaceWorker._infer_env_batch_size({"obs": obs_dict})
+                if m is None:
+                    mask_parts.append(torch.zeros(bsz, dtype=torch.bool))
+                else:
+                    if not isinstance(m, torch.Tensor):
+                        m = torch.as_tensor(m, dtype=torch.bool)
+                    mask_parts.append(m.cpu().contiguous())
+            merged_dp_mask = torch.cat(mask_parts, dim=0)
+
+        out: dict[str, Any] = {"obs": merged_obs, "final_obs": merged_final_obs}
+        if merged_dp_mask is not None:
+            out["dp_history_reset_mask"] = merged_dp_mask
+        return out
 
     def send_chunk_actions(
         self,

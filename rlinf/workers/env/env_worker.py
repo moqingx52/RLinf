@@ -305,6 +305,10 @@ class EnvWorker(Worker):
                 intervene_actions = infos["final_info"]["intervene_action"]
                 intervene_flags = infos["final_info"]["intervene_flag"]
 
+        dp_history_reset_mask = None
+        if self.cfg.env.train.auto_reset and chunk_dones.any():
+            dp_history_reset_mask = chunk_dones[:, -1].contiguous()
+
         env_output = EnvOutput(
             obs=extracted_obs,
             final_obs=infos["final_observation"]
@@ -316,6 +320,7 @@ class EnvWorker(Worker):
             truncations=chunk_truncations,
             intervene_actions=intervene_actions,
             intervene_flags=intervene_flags,
+            dp_history_reset_mask=dp_history_reset_mask,
         )
         return env_output, env_info
 
@@ -354,11 +359,16 @@ class EnvWorker(Worker):
                 for key in final_info["episode"]:
                     env_info[key] = final_info["episode"][key][chunk_dones[:, -1]].cpu()
 
+        dp_history_reset_mask = None
+        if self.cfg.env.eval.auto_reset and chunk_dones.any():
+            dp_history_reset_mask = chunk_dones[:, -1].contiguous()
+
         env_output = EnvOutput(
             obs=extracted_obs,
             final_obs=infos["final_observation"]
             if "final_observation" in infos
             else None,
+            dp_history_reset_mask=dp_history_reset_mask,
         )
         return env_output, env_info
 
@@ -605,6 +615,9 @@ class EnvWorker(Worker):
                     else None,
                     intervene_actions=None,
                     intervene_flags=None,
+                    dp_history_reset_mask=torch.ones(
+                        self.train_num_envs_per_stage, dtype=torch.bool
+                    ),
                 )
                 env_outputs.append(env_output)
         else:
@@ -621,6 +634,9 @@ class EnvWorker(Worker):
                     truncations=truncations,
                     intervene_actions=self.last_intervened_info_list[stage_id][0],
                     intervene_flags=self.last_intervened_info_list[stage_id][1],
+                    dp_history_reset_mask=torch.ones(
+                        self.train_num_envs_per_stage, dtype=torch.bool
+                    ),
                 )
                 env_outputs.append(env_output)
 
@@ -678,13 +694,13 @@ class EnvWorker(Worker):
             for stage_id in range(self.stage_num):
                 env_output: EnvOutput = env_outputs[stage_id]
                 env_batch = env_output.to_dict()
-                self.send_env_batch(
-                    output_channel,
-                    {
-                        "obs": env_batch["obs"],
-                        "final_obs": env_batch["final_obs"],
-                    },
-                )
+                payload = {
+                    "obs": env_batch["obs"],
+                    "final_obs": env_batch["final_obs"],
+                }
+                if env_batch.get("dp_history_reset_mask") is not None:
+                    payload["dp_history_reset_mask"] = env_batch["dp_history_reset_mask"]
+                self.send_env_batch(output_channel, payload)
 
             for _ in range(self.n_train_chunk_steps):
                 for stage_id in range(self.stage_num):
@@ -730,13 +746,15 @@ class EnvWorker(Worker):
                         rollout_result.actions, stage_id
                     )
                     env_batch = env_output.to_dict()
-                    self.send_env_batch(
-                        output_channel,
-                        {
-                            "obs": env_batch["obs"],
-                            "final_obs": env_batch["final_obs"],
-                        },
-                    )
+                    payload = {
+                        "obs": env_batch["obs"],
+                        "final_obs": env_batch["final_obs"],
+                    }
+                    if env_batch.get("dp_history_reset_mask") is not None:
+                        payload["dp_history_reset_mask"] = env_batch[
+                            "dp_history_reset_mask"
+                        ]
+                    self.send_env_batch(output_channel, payload)
                     if self.collect_transitions:
                         next_obs = (
                             env_output.final_obs
@@ -820,16 +838,20 @@ class EnvWorker(Worker):
                         final_obs=infos["final_observation"]
                         if "final_observation" in infos
                         else None,
+                        dp_history_reset_mask=torch.ones(
+                            self.eval_num_envs_per_stage, dtype=torch.bool
+                        ),
                     )
                     env_batch = env_output.to_dict()
-                    self.send_env_batch(
-                        output_channel,
-                        {
-                            "obs": env_batch["obs"],
-                            "final_obs": env_batch["final_obs"],
-                        },
-                        mode="eval",
-                    )
+                    payload = {
+                        "obs": env_batch["obs"],
+                        "final_obs": env_batch["final_obs"],
+                    }
+                    if env_batch.get("dp_history_reset_mask") is not None:
+                        payload["dp_history_reset_mask"] = env_batch[
+                            "dp_history_reset_mask"
+                        ]
+                    self.send_env_batch(output_channel, payload, mode="eval")
 
             for eval_step in range(self.n_eval_chunk_steps):
                 for stage_id in range(self.stage_num):
@@ -854,14 +876,15 @@ class EnvWorker(Worker):
                         if eval_step == self.n_eval_chunk_steps - 1:
                             continue
                     env_batch = env_output.to_dict()
-                    self.send_env_batch(
-                        output_channel,
-                        {
-                            "obs": env_batch["obs"],
-                            "final_obs": env_batch["final_obs"],
-                        },
-                        mode="eval",
-                    )
+                    payload = {
+                        "obs": env_batch["obs"],
+                        "final_obs": env_batch["final_obs"],
+                    }
+                    if env_batch.get("dp_history_reset_mask") is not None:
+                        payload["dp_history_reset_mask"] = env_batch[
+                            "dp_history_reset_mask"
+                        ]
+                    self.send_env_batch(output_channel, payload, mode="eval")
 
             self.finish_rollout(mode="eval")
         for stage_id in range(self.stage_num):

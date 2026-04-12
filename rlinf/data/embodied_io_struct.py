@@ -57,6 +57,8 @@ class EnvOutput:
 
     intervene_actions: Optional[torch.Tensor] = None  # [B]
     intervene_flags: Optional[torch.Tensor] = None  # [B]
+    # True = this local env slot should clear remote/local DP obs history before next predict.
+    dp_history_reset_mask: Optional[torch.Tensor] = None  # [B] bool
 
     def __post_init__(self):
         self.obs = put_tensor_device(self.obs, "cpu")
@@ -87,6 +89,11 @@ class EnvOutput:
         self.intervene_flags = (
             self.intervene_flags.cpu().contiguous()
             if self.intervene_flags is not None
+            else None
+        )
+        self.dp_history_reset_mask = (
+            self.dp_history_reset_mask.cpu().contiguous()
+            if self.dp_history_reset_mask is not None
             else None
         )
 
@@ -226,6 +233,11 @@ class EnvOutput:
             allow_partial_none=True,
             fill_value=False,
         )
+        merged_dp_history_reset_mask = _merge_optional_tensor_field(
+            "dp_history_reset_mask",
+            allow_partial_none=True,
+            fill_value=False,
+        )
         # turn to EnvOutput and turn to dict to call post init for tensor processing
         return EnvOutput(
             obs=merged_obs,
@@ -236,6 +248,7 @@ class EnvOutput:
             rewards=merged_rewards,
             intervene_actions=merged_intervene_actions,
             intervene_flags=merged_intervene_flags,
+            dp_history_reset_mask=merged_dp_history_reset_mask,
         ).to_dict()
 
     def to_dict(self) -> dict[str, Any]:
@@ -253,6 +266,7 @@ class EnvOutput:
         env_output_dict["rewards"] = self.rewards
         env_output_dict["intervene_actions"] = self.intervene_actions
         env_output_dict["intervene_flags"] = self.intervene_flags
+        env_output_dict["dp_history_reset_mask"] = self.dp_history_reset_mask
 
         return env_output_dict
 

@@ -11,7 +11,7 @@ import json
 import socket
 import struct
 import uuid
-from typing import Any, Optional
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 
@@ -125,8 +125,24 @@ class DpRemoteClient:
         self._meta = dict(meta.get("dp_meta") or {})
         return self._meta
 
-    def reset_history(self) -> None:
-        self._call("dp_reset_history")
+    def reset_history(
+        self,
+        env_idx: Optional[Sequence[int]] = None,
+        env_mask: Optional[Union[Sequence[bool], np.ndarray]] = None,
+    ) -> dict[str, Any]:
+        """Reset DP observation history on server.
+
+        With no arguments, clears the full batch (legacy). With ``env_idx`` and/or
+        ``env_mask``, only those local batch slots are cleared (async multi-env).
+        """
+        kw: dict[str, Any] = {}
+        if env_idx is not None:
+            kw["env_idx"] = [int(i) for i in env_idx]
+        if env_mask is not None:
+            m = np.asarray(env_mask, dtype=np.bool_)
+            kw["env_mask"] = m.tolist()
+        meta, _ = self._call("dp_reset_history", **kw)
+        return dict(meta)
 
     def predict(
         self,

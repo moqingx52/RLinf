@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -109,8 +109,12 @@ class RemoteDpExpertModule(torch.nn.Module):
             device=main_images.device, dtype=torch.float32
         )
 
-    def reset_remote_history(self) -> None:
-        self._client.reset_history()
+    def reset_remote_history(
+        self,
+        env_idx: Optional[Sequence[int]] = None,
+        env_mask: Optional[Union[Sequence[bool], np.ndarray]] = None,
+    ) -> None:
+        self._client.reset_history(env_idx=env_idx, env_mask=env_mask)
 
 
 @dataclass
@@ -168,6 +172,7 @@ class DpPolicyForRL(nn.Module, BasePolicy):
 
         self._hist_head: Optional[torch.Tensor] = None
         self._hist_state: Optional[torch.Tensor] = None
+        self._hist_ready: Optional[torch.Tensor] = None
 
         self.use_dsrl = cfg.use_dsrl
         if self.use_dsrl:
@@ -214,11 +219,51 @@ class DpPolicyForRL(nn.Module, BasePolicy):
                 output_dim=1,
             )
 
-    def reset_obs_history(self):
-        self._hist_head = None
-        self._hist_state = None
+    def reset_obs_history(
+        self,
+        env_idx: Optional[Sequence[int]] = None,
+        env_mask: Optional[Any] = None,
+    ):
+        """Clear DP obs history. Remote: forwards to server (full clear or per-slot). Local: same semantics."""
         if self._expert_backend == "remote":
-            self.dp_expert.reset_remote_history()
+            if env_idx is None and env_mask is None:
+                self.dp_expert.reset_remote_history()
+            else:
+                em: Optional[np.ndarray] = None
+                if env_mask is not None:
+                    if isinstance(env_mask, torch.Tensor):
+                        em = env_mask.detach().cpu().numpy().astype(np.bool_)
+                    else:
+                        em = np.asarray(env_mask, dtype=np.bool_)
+                self.dp_expert.reset_remote_history(env_idx=env_idx, env_mask=em)
+            self._hist_head = None
+            self._hist_state = None
+            self._hist_ready = None
+            return
+
+        if env_idx is None and env_mask is None:
+            self._hist_head = None
+            self._hist_state = None
+            self._hist_ready = None
+            return
+        if self._hist_head is None or self._hist_ready is None:
+            return
+        B = int(self._hist_head.shape[0])
+        dev = self._hist_head.device
+        mask = torch.zeros(B, dtype=torch.bool, device=dev)
+        if env_mask is not None:
+            mask = torch.as_tensor(env_mask, dtype=torch.bool, device=dev)
+            if mask.numel() != B:
+                raise ValueError(f"env_mask length {mask.numel()} != batch {B}")
+        if env_idx is not None:
+            for i in env_idx:
+                ii = int(i)
+                if ii < 0 or ii >= B:
+                    raise ValueError(f"env_idx out of range: {ii} (B={B})")
+                mask[ii] = True
+        if mask.any():
+            self._hist_ready = self._hist_ready.clone()
+            self._hist_ready[mask] = False
 
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         if forward_type == ForwardType.SAC:
@@ -333,13 +378,30 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         if self._hist_head is None or self._hist_head.shape[0] != B:
             self._hist_head = head_bchw.unsqueeze(1).expand(B, T, -1, -1, -1).clone()
             self._hist_state = state_bd.unsqueeze(1).expand(B, T, -1).clone()
-        else:
-            self._hist_head = torch.roll(self._hist_head, shifts=-1, dims=1)
-            self._hist_state = torch.roll(self._hist_state, shifts=-1, dims=1)
-            self._hist_head = self._hist_head.to(device=dev, dtype=dt)
-            self._hist_state = self._hist_state.to(device=dev, dtype=state_bd.dtype)
-            self._hist_head[:, -1] = head_bchw
-            self._hist_state[:, -1] = state_bd
+            self._hist_ready = torch.ones(B, dtype=torch.bool, device=dev)
+            return
+        assert self._hist_ready is not None
+        self._hist_head = self._hist_head.to(device=dev, dtype=dt)
+        self._hist_state = self._hist_state.to(device=dev, dtype=state_bd.dtype)
+        old_ready = self._hist_ready
+        need_init = ~old_ready
+        rolling = old_ready
+        if need_init.any():
+            self._hist_head = self._hist_head.clone()
+            self._hist_state = self._hist_state.clone()
+            self._hist_ready = old_ready.clone()
+            self._hist_head[need_init] = (
+                head_bchw[need_init].unsqueeze(1).expand(-1, T, -1, -1, -1).clone()
+            )
+            self._hist_state[need_init] = (
+                state_bd[need_init].unsqueeze(1).expand(-1, T, -1).clone()
+            )
+            self._hist_ready[need_init] = True
+        if rolling.any():
+            self._hist_head[rolling] = torch.roll(self._hist_head[rolling], shifts=-1, dims=1)
+            self._hist_state[rolling] = torch.roll(self._hist_state[rolling], shifts=-1, dims=1)
+            self._hist_head[rolling, -1] = head_bchw[rolling]
+            self._hist_state[rolling, -1] = state_bd[rolling]
 
     @torch.inference_mode()
     def predict_action_batch(
