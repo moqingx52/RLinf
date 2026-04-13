@@ -107,7 +107,8 @@ env:
   enable_offload: False
 
   train:
-    total_num_envs: 16
+    # 调试：先单环境跑通；须满足 global_batch % (micro_batch * actor_world_size) == 0
+    total_num_envs: 1
     reward_coef: ${algorithm.reward_coef}
     # 须为 actor.model.num_action_chunks(6) 的倍数；与 task_config.step_lim 一致（避免 client 校验 200/198 漂移）
     max_episode_steps: 198
@@ -126,7 +127,7 @@ env:
       camera:
         collect_wrist_camera: false
   eval:
-    total_num_envs: 32
+    total_num_envs: 1
     auto_reset: True
     ignore_terminations: True
     max_episode_steps: 198
@@ -166,8 +167,8 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 64
-  global_batch_size: 512
+  micro_batch_size: 8
+  global_batch_size: 16
   seed: 42
   enable_offload: False
 

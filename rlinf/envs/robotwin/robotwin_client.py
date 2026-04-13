@@ -17,11 +17,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import struct
 import threading
 import uuid
 from typing import Any, Optional
+
+_logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -142,8 +145,20 @@ class ClientVectorEnv:
         self._last_reset_seeds: Optional[list[int]] = None
         self.remote_obs_schema: Optional[dict[str, Any]] = None
 
+        _logger.info(
+            "ClientVectorEnv: connecting TCP %s:%s (n_envs=%s, op_timeout=%ss)",
+            host,
+            port,
+            n_envs,
+            self._timeout,
+        )
         self._connect()
+        _logger.info(
+            "ClientVectorEnv: TCP connected, sending remote init (n_envs=%s)...",
+            n_envs,
+        )
         self._call_init()
+        _logger.info("ClientVectorEnv: remote init RPC finished")
         if self._heartbeat_interval > 0:
             self._hb_stop.clear()
             self._hb_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)

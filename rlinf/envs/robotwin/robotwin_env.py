@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import json
+import logging
 import os
 from typing import Any, Optional, Union
+
+_logger = logging.getLogger(__name__)
 
 import gymnasium as gym
 import numpy as np
@@ -87,6 +90,12 @@ class RoboTwinEnv(gym.Env):
             host, port = parse_server_addr(server_addr)
             timeout = float(self.cfg.get("request_timeout", 180.0))
             hb = float(self.cfg.get("heartbeat_interval_seconds", 20.0))
+            _logger.info(
+                "[RoboTwinEnv._init_env] before ClientVectorEnv (TCP): %s:%s n_envs=%s",
+                host,
+                port,
+                self.num_envs,
+            )
             self.venv = ClientVectorEnv(
                 host=host,
                 port=port,
@@ -96,6 +105,9 @@ class RoboTwinEnv(gym.Env):
                 heartbeat_interval=hb,
                 task_config=OmegaConf.to_container(self.cfg.task_config, resolve=True),
             )
+            _logger.info(
+                "[RoboTwinEnv._init_env] after ClientVectorEnv constructed (TCP+remote init done)"
+            )
             self._validate_remote_client_bridge()
             return
 
@@ -103,11 +115,16 @@ class RoboTwinEnv(gym.Env):
 
         from robotwin.envs.vector_env import VectorEnv
 
+        _logger.info(
+            "[RoboTwinEnv._init_env] before in-process VectorEnv: n_envs=%s",
+            self.num_envs,
+        )
         self.venv = VectorEnv(
             task_config=OmegaConf.to_container(self.cfg.task_config, resolve=True),
             n_envs=self.num_envs,
             env_seeds=env_seeds,
         )
+        _logger.info("[RoboTwinEnv._init_env] after in-process VectorEnv constructed")
 
     def _validate_remote_client_bridge(self) -> None:
         """Fail-fast: task / state / camera / horizon vs server ``obs_schema`` + ``check_seeds``."""
