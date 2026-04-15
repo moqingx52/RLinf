@@ -173,6 +173,8 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         self._hist_head: Optional[torch.Tensor] = None
         self._hist_state: Optional[torch.Tensor] = None
         self._hist_ready: Optional[torch.Tensor] = None
+        # Remote DP server only allows selective history reset after first successful predict.
+        self._remote_history_initialized = False
 
         self.use_dsrl = cfg.use_dsrl
         if self.use_dsrl:
@@ -226,8 +228,14 @@ class DpPolicyForRL(nn.Module, BasePolicy):
     ):
         """Clear DP obs history. Remote: forwards to server (full clear or per-slot). Local: same semantics."""
         if self._expert_backend == "remote":
-            if env_idx is None and env_mask is None:
+            should_full_reset = (
+                env_idx is None
+                and env_mask is None
+                or not self._remote_history_initialized
+            )
+            if should_full_reset:
                 self.dp_expert.reset_remote_history()
+                self._remote_history_initialized = False
             else:
                 em: Optional[np.ndarray] = None
                 if env_mask is not None:
@@ -434,6 +442,7 @@ class DpPolicyForRL(nn.Module, BasePolicy):
 
         if self._expert_backend == "remote":
             chunk_actions = self.dp_expert.remote_predict(main, states, init_noise)
+            self._remote_history_initialized = True
         else:
             step = _rlinf_to_dp_timestep(main, states)
             expert_dev = next(self.dp_expert.parameters()).device
