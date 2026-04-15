@@ -574,7 +574,7 @@ class MultiStepRolloutWorker(Worker):
             mask_parts: list[torch.Tensor] = []
             for obs_batch, obs_dict in zip(obs_batches, obs_dicts):
                 m = obs_batch.get("dp_history_reset_mask")
-                bsz = HuggingfaceWorker._infer_env_batch_size({"obs": obs_dict})
+                bsz = MultiStepRolloutWorker._infer_env_batch_size({"obs": obs_dict})
                 if m is None:
                     mask_parts.append(torch.zeros(bsz, dtype=torch.bool))
                 else:

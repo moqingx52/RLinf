@@ -84,6 +84,7 @@ task_config:
   pcd_down_sample_num: 1024
   pcd_crop: true
   save_path: ./data
-  clear_cache_freq: 8
+  # OIDN/svulkan2 debug: clear cache every step to reduce peak pressure.
+  clear_cache_freq: 1
   collect_data: true
   eval_video_log: true
