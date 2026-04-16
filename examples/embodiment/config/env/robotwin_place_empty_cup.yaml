@@ -17,8 +17,12 @@ auto_reset: False
 ignore_terminations: False
 
 reward_coef: 1.0
-use_custom_reward: True
+# RoboTwin remote server returns dense scalar reward; prefer using it for training/metrics.
+use_custom_reward: False
 use_rel_reward: True
+prefer_remote_reward: True
+# When true, logs both remote reward and used reward into infos for debugging.
+debug_reward_trace: False
 # DP 单头桥接阶段建议 false，与 policy/DP/rlinf_adapter 一致
 center_crop: False
 

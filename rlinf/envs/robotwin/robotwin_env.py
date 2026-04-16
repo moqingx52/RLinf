@@ -55,6 +55,18 @@ class RoboTwinEnv(gym.Env):
         self.num_group = self.num_envs // self.group_size
         self.use_fixed_reset_state_ids = cfg.use_fixed_reset_state_ids
         self.use_custom_reward = cfg.use_custom_reward
+        # RoboTwin remote server already returns a (dense) scalar reward per macro step.
+        # Historically RLinf overwrote it with a termination-based reward when
+        # ``use_custom_reward`` is enabled, which makes reward/return appear as all-zero
+        # for non-terminating episodes. Default to prefer remote reward unless explicitly disabled.
+        self.prefer_remote_reward = bool(cfg.get("prefer_remote_reward", True))
+        # Action semantics.
+        # - "absolute_qpos": actions are absolute joint targets (RoboTwin default).
+        # - "delta_qpos": actions are joint deltas relative to current state; grippers remain absolute.
+        self.action_mode = str(cfg.get("action_mode", "absolute_qpos"))
+        if self.action_mode not in ("absolute_qpos", "delta_qpos"):
+            raise ValueError(f"Unsupported action_mode={self.action_mode!r} (expected 'absolute_qpos' or 'delta_qpos')")
+        self.debug_action_trace = bool(cfg.get("debug_action_trace", False))
 
         self.video_cfg = cfg.video_cfg
 
@@ -72,6 +84,8 @@ class RoboTwinEnv(gym.Env):
         self.prev_step_reward = torch.zeros(
             self.num_envs, dtype=torch.float32, device=self.device
         )
+        # Cache last observed state for delta->absolute action conversion.
+        self._last_states: Optional[torch.Tensor] = None
         if self.record_metrics:
             self._init_metrics()
             self._elapsed_steps = torch.zeros(
@@ -309,6 +323,44 @@ class RoboTwinEnv(gym.Env):
 
         return extracted_obs
 
+    def _maybe_convert_delta_actions(self, actions: np.ndarray) -> np.ndarray:
+        """Convert delta joint actions to absolute qpos targets if configured."""
+        if self.action_mode != "delta_qpos":
+            return actions
+        if self._last_states is None:
+            raise RuntimeError("action_mode='delta_qpos' requires a prior observation (call reset() first)")
+        # actions: [n_envs, T, 14]
+        a = np.asarray(actions, dtype=np.float32, order="C").copy()
+        last = (
+            self._last_states.detach()
+            .to("cpu", dtype=torch.float32)
+            .numpy()
+            .reshape(self.num_envs, -1)
+        )
+        if last.shape[1] < 14:
+            raise RuntimeError(f"expected last state dim >=14, got {last.shape}")
+
+        # Which dims are delta? Default: 12 arm joints are delta, 2 grippers are absolute.
+        mask = self.cfg.get("action_delta_mask", None)
+        if mask is None:
+            delta_mask = np.array([True] * 6 + [False] + [True] * 6 + [False], dtype=bool)
+        else:
+            delta_mask = np.asarray(mask, dtype=bool).reshape(-1)
+        if delta_mask.shape[0] != 14:
+            raise ValueError(f"action_delta_mask must have length 14, got {delta_mask.shape[0]}")
+
+        # Integrate deltas within the chunk:
+        #   target_0 = last + delta_0
+        #   target_t = target_{t-1} + delta_t
+        # For absolute dims (e.g. grippers), we just forward the absolute value each step.
+        for env_id in range(self.num_envs):
+            cur = last[env_id, :14].copy()
+            for t in range(a.shape[1]):
+                cur[delta_mask] = cur[delta_mask] + a[env_id, t, delta_mask]
+                cur[~delta_mask] = a[env_id, t, ~delta_mask]
+                a[env_id, t, :14] = cur
+        return a
+
     def _calc_step_reward(self, terminations):
         reward = self.cfg.reward_coef * terminations
 
@@ -377,6 +429,7 @@ class RoboTwinEnv(gym.Env):
         self._reset_metrics(env_idx)
 
         extracted_obs = self._extract_obs_image(raw_obs)
+        self._last_states = extracted_obs.get("states", None)
 
         return extracted_obs, infos
 
@@ -396,11 +449,25 @@ class RoboTwinEnv(gym.Env):
             # [n_envs, action_dim] -> [n_envs, 1, action_dim]
             actions = actions[:, None, :]
 
+        actions = self._maybe_convert_delta_actions(actions)
+        if self.debug_action_trace:
+            a = np.asarray(actions, dtype=np.float32)
+            infos["_action_sent_stats"] = {
+                "shape": list(a.shape),
+                "mean": float(a.mean()) if a.size else 0.0,
+                "std": float(a.std()) if a.size else 0.0,
+                "min": float(a.min()) if a.size else 0.0,
+                "max": float(a.max()) if a.size else 0.0,
+                "gripper_left_mean": float(a[..., 6].mean()) if a.size else 0.0,
+                "gripper_right_mean": float(a[..., 13].mean()) if a.size else 0.0,
+            }
+
         raw_obs, step_reward, terminations, truncations, info_list = self.venv.step(
             actions
         )
         extracted_obs = self._extract_obs_image(raw_obs)
         infos = list_of_dict_to_dict_of_list(info_list)
+        self._last_states = extracted_obs.get("states", None)
 
         if isinstance(terminations, list):
             terminations = torch.as_tensor(
@@ -411,14 +478,32 @@ class RoboTwinEnv(gym.Env):
                 np.array(truncations).reshape(-1), device=self.device
             )
 
-        if self.use_custom_reward:
+        # Normalize remote reward first (so we can optionally trace/compare).
+        remote_step_reward = step_reward
+        if isinstance(remote_step_reward, list):
+            remote_step_reward = torch.as_tensor(
+                np.array(remote_step_reward, dtype=np.float32).reshape(-1),
+                device=self.device,
+            )
+        elif isinstance(remote_step_reward, np.ndarray):
+            remote_step_reward = torch.as_tensor(
+                remote_step_reward.astype(np.float32).reshape(-1),
+                device=self.device,
+            )
+        elif isinstance(remote_step_reward, torch.Tensor):
+            remote_step_reward = remote_step_reward.to(device=self.device, dtype=torch.float32).reshape(-1)
+
+        overridden = False
+        if self.use_custom_reward and not self.prefer_remote_reward:
             step_reward = self._calc_step_reward(terminations)
+            overridden = True
         else:
-            if isinstance(step_reward, list):
-                step_reward = torch.as_tensor(
-                    np.array(step_reward, dtype=np.float32).reshape(-1),
-                    device=self.device,
-                )
+            step_reward = remote_step_reward
+
+        if bool(self.cfg.get("debug_reward_trace", False)):
+            infos["_reward_remote"] = remote_step_reward.detach().clone()
+            infos["_reward_used"] = step_reward.detach().clone()
+            infos["_reward_overridden"] = overridden
 
         self._elapsed_steps += actions.shape[1]
         truncated = self._elapsed_steps >= self.cfg.max_episode_steps
@@ -451,11 +536,23 @@ class RoboTwinEnv(gym.Env):
         obs_list = []
         infos_list = []
 
+        chunk_actions = self._maybe_convert_delta_actions(chunk_actions)
         raw_obs, step_reward, terminations, truncations, info_list = self.venv.step(
             chunk_actions
         )
         extracted_obs = self._extract_obs_image(raw_obs)
         infos = list_of_dict_to_dict_of_list(info_list)
+        if self.debug_action_trace:
+            a = np.asarray(chunk_actions, dtype=np.float32)
+            infos["_action_sent_stats"] = {
+                "shape": list(a.shape),
+                "mean": float(a.mean()) if a.size else 0.0,
+                "std": float(a.std()) if a.size else 0.0,
+                "min": float(a.min()) if a.size else 0.0,
+                "max": float(a.max()) if a.size else 0.0,
+                "gripper_left_mean": float(a[..., 6].mean()) if a.size else 0.0,
+                "gripper_right_mean": float(a[..., 13].mean()) if a.size else 0.0,
+            }
         obs_list.append(extracted_obs)
         infos_list.append(infos)
         if isinstance(terminations, list):
@@ -467,14 +564,31 @@ class RoboTwinEnv(gym.Env):
                 np.array(truncations).reshape(-1), device=self.device
             )
 
-        if self.use_custom_reward:
+        remote_step_reward = step_reward
+        if isinstance(remote_step_reward, list):
+            remote_step_reward = torch.as_tensor(
+                np.array(remote_step_reward, dtype=np.float32).reshape(-1),
+                device=self.device,
+            )
+        elif isinstance(remote_step_reward, np.ndarray):
+            remote_step_reward = torch.as_tensor(
+                remote_step_reward.astype(np.float32).reshape(-1),
+                device=self.device,
+            )
+        elif isinstance(remote_step_reward, torch.Tensor):
+            remote_step_reward = remote_step_reward.to(device=self.device, dtype=torch.float32).reshape(-1)
+
+        overridden = False
+        if self.use_custom_reward and not self.prefer_remote_reward:
             step_reward = self._calc_step_reward(terminations)
+            overridden = True
         else:
-            if isinstance(step_reward, list):
-                step_reward = torch.as_tensor(
-                    np.array(step_reward, dtype=np.float32).reshape(-1),
-                    device=self.device,
-                )
+            step_reward = remote_step_reward
+
+        if bool(self.cfg.get("debug_reward_trace", False)):
+            infos["_reward_remote"] = remote_step_reward.detach().clone()
+            infos["_reward_used"] = step_reward.detach().clone()
+            infos["_reward_overridden"] = overridden
 
         chunk_rewards = self._cal_chunk_rewards(
             step_reward, chunk_step, terminations, infos
