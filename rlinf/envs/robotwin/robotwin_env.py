@@ -321,24 +321,42 @@ class RoboTwinEnv(gym.Env):
             return reward
 
     def _cal_chunk_rewards(self, step_reward, chunk_step, terminations, infos):
-        n_steps_to_run = np.array(
-            [[0] for i in range(self.num_envs)]
-        )  # infos.get("n_steps_to_run", np.array([[0] for i in range(self.num_envs)]))
+        """
+        Expand a macro-step reward (one env.step) into chunk_step rewards.
+
+        RoboTwin remote server returns one scalar reward per env.step even when the
+        action is a chunk (T, action_dim). For training/metrics we should not drop
+        that reward just because the episode didn't terminate on this macro step.
+        """
+
+        # If the env provides how many inner steps were actually executed, align the
+        # reward to the last executed inner step; otherwise default to last step.
+        n_steps_to_run = None
+        if isinstance(infos, dict):
+            n_steps_to_run = infos.get("n_steps_to_run", None)
+            if n_steps_to_run is None:
+                # RoboTwin tasks may expose chunk_len in info (per-env); fallback.
+                n_steps_to_run = infos.get("chunk_len", None)
+
+        if n_steps_to_run is None:
+            n_steps_to_run = np.full((self.num_envs,), int(chunk_step), dtype=np.int32)
 
         n_steps_to_run = torch.as_tensor(
             np.array(n_steps_to_run).reshape(-1), device=self.device
-        )
+        ).clamp(min=1, max=int(chunk_step))
+
         chunk_rewards = torch.zeros(self.num_envs, chunk_step, device=self.device)
         for env_id in range(self.num_envs):
-            steps_left = n_steps_to_run[env_id]
             reward = step_reward[env_id]
-            start_idx = chunk_step - steps_left - 1
+            end_idx = int(n_steps_to_run[env_id].item()) - 1
 
-            if terminations[env_id] and start_idx > 0:
-                if self.use_rel_reward:
-                    chunk_rewards[env_id, start_idx] = reward
-                else:
-                    chunk_rewards[env_id, start_idx:] = reward
+            # Always record the macro reward at the last executed inner step.
+            chunk_rewards[env_id, end_idx] = reward
+
+            # If termination happened and we're using absolute rewards, optionally
+            # keep the legacy behavior of "reward persists" after success.
+            if bool(terminations[env_id].item()) and not self.use_rel_reward:
+                chunk_rewards[env_id, end_idx:] = reward
 
         return chunk_rewards
 
