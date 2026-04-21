@@ -60,6 +60,8 @@ class SupportedModel(Enum):
     DP_POLICY = ("dp_policy", "embodied")
     # 与 dp_policy 同实现：冻结 remote/local DP + DSRL 头；名称用于配置可读性
     ROBOTWIN_DP_DSRL = ("robotwin_dp_dsrl", "embodied")
+    # 与 dp_policy 同实现：冻结 remote RDT + DSRL 头；名称用于配置可读性
+    ROBOTWIN_RDT_DSRL = ("robotwin_rdt_dsrl", "embodied")
     CMA_POLICY = ("cma", "embodied")
     LINGBOTVLA = ("lingbotvla", "embodied")
 

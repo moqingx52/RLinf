@@ -277,6 +277,7 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.CNN_POLICY,
             SupportedModel.DP_POLICY,
             SupportedModel.ROBOTWIN_DP_DSRL,
+            SupportedModel.ROBOTWIN_RDT_DSRL,
         ]:
             if self.cfg.algorithm.loss_type == "embodied_dagger":
                 kwargs = {"mode": "eval"}
@@ -289,6 +290,7 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.MLP_POLICY,
             SupportedModel.DP_POLICY,
             SupportedModel.ROBOTWIN_DP_DSRL,
+            SupportedModel.ROBOTWIN_RDT_DSRL,
         ]:
             kwargs["return_obs"] = not hasattr(self.hf_model, "q_head")
 

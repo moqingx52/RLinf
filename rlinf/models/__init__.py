@@ -40,6 +40,8 @@ def get_model(cfg: DictConfig):
         from rlinf.models.embodiment.dp_policy import get_model
     elif model_type == SupportedModel.ROBOTWIN_DP_DSRL:
         from rlinf.models.embodiment.robotwin_dp_dsrl import get_model
+    elif model_type == SupportedModel.ROBOTWIN_RDT_DSRL:
+        from rlinf.models.embodiment.robotwin_rdt_dsrl import get_model
     elif model_type == SupportedModel.LINGBOTVLA:
         from rlinf.models.embodiment.lingbotvla import get_model
     else:
