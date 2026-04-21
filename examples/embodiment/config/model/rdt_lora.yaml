@@ -1,0 +1,29 @@
+# RDT LoRA（第一阶段任务适配）
+model_type: "rdt_lora"
+
+ckpt_path: ${oc.env:ROBOTWIN_RDT_CKPT,/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup/latest.safetensors}
+config_path: ${oc.env:ROBOTWIN_RDT_CONFIG,/workspace/RoboTwin/policy/RDT/configs/base.yaml}
+vision_encoder_path: ${oc.env:ROBOTWIN_RDT_VISION_ENCODER,/workspace/RoboTwin/weights/RDT/siglip-so400m-patch14-384}
+text_encoder_path: ${oc.env:ROBOTWIN_RDT_TEXT_ENCODER,/workspace/RoboTwin/weights/RDT/t5-v1_1-xxl}
+
+precision: "bf16"
+control_frequency: 25
+num_action_chunks: 8
+action_dim: 14
+n_obs_steps: 2
+
+# 关键开关
+use_precomputed_lang_embed: true
+freeze_vision_encoder: true
+freeze_text_encoder: true
+freeze_rdt_backbone: false
+freeze_final_layer: false
+train_lora_only: true
+
+lora_enable: true
+lora_rank: 8
+lora_alpha: 16
+lora_dropout: 0.0
+lora_target_modules: ["attn", "cross_attn", "qkv", "proj", "q", "kv"]
+
+is_lora: false

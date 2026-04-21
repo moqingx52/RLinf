@@ -276,6 +276,7 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.GR00T,
             SupportedModel.CNN_POLICY,
             SupportedModel.DP_POLICY,
+            SupportedModel.RDT_LORA,
             SupportedModel.ROBOTWIN_DP_DSRL,
             SupportedModel.ROBOTWIN_RDT_DSRL,
         ]:
@@ -289,6 +290,7 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.FLOW_POLICY,
             SupportedModel.MLP_POLICY,
             SupportedModel.DP_POLICY,
+            SupportedModel.RDT_LORA,
             SupportedModel.ROBOTWIN_DP_DSRL,
             SupportedModel.ROBOTWIN_RDT_DSRL,
         ]:

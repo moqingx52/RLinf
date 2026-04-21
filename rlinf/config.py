@@ -58,6 +58,7 @@ class SupportedModel(Enum):
     CNN_POLICY = ("cnn_policy", "embodied")
     FLOW_POLICY = ("flow_policy", "embodied")
     DP_POLICY = ("dp_policy", "embodied")
+    RDT_LORA = ("rdt_lora", "embodied")
     # 与 dp_policy 同实现：冻结 remote/local DP + DSRL 头；名称用于配置可读性
     ROBOTWIN_DP_DSRL = ("robotwin_dp_dsrl", "embodied")
     # 与 dp_policy 同实现：冻结 remote RDT + DSRL 头；名称用于配置可读性
