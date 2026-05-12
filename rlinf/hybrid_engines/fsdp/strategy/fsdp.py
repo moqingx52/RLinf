@@ -98,6 +98,24 @@ class FSDPStrategy(FSDPStrategyBase):
     def get_fsdp_version(cls) -> FSDPVersion:
         return FSDPVersion.FSDP
 
+    @staticmethod
+    def _collect_fsdp_managed_param_ids(model: FSDP) -> set[int]:
+        """Collect ids of params managed by FSDP handles.
+
+        For `use_orig_params=True`, some original parameters may not expose
+        `_handle`/`_local_shard` directly at this point. We therefore also
+        collect ids from each handle's `flat_param._params` view list.
+        """
+        managed_param_ids: set[int] = set()
+        all_handles = getattr(model, "_all_handles", None) or []
+        for handle in all_handles:
+            flat_param = getattr(handle, "flat_param", None)
+            if flat_param is not None:
+                managed_param_ids.add(id(flat_param))
+                for orig_param in getattr(flat_param, "_params", []) or []:
+                    managed_param_ids.add(id(orig_param))
+        return managed_param_ids
+
     def get_optimizer_state_dict(self, model: FSDP, optimizer: Optimizer) -> dict:
         """
         Get the full state dict of the optimizer.
@@ -123,8 +141,9 @@ class FSDPStrategy(FSDPStrategyBase):
             - model (FSDP): The FSDP wrapped model.
             - offload_grad (bool): Whether to offload gradients or not.
         """
+        managed_param_ids = self._collect_fsdp_managed_param_ids(model)
         for _, param in model.named_parameters():
-            is_fsdp_managed_param = False
+            is_fsdp_managed_param = id(param) in managed_param_ids
             if hasattr(param, "_handle") and param._handle is not None:
                 is_fsdp_managed_param = True
                 flat_param = param._handle.flat_param
@@ -165,8 +184,9 @@ class FSDPStrategy(FSDPStrategyBase):
             - onload_grad (bool): Whether to load gradients or not.
 
         """
+        managed_param_ids = self._collect_fsdp_managed_param_ids(model)
         for _, param in model.named_parameters():
-            is_fsdp_managed_param = False
+            is_fsdp_managed_param = id(param) in managed_param_ids
             if hasattr(param, "_handle") and param._handle is not None:
                 is_fsdp_managed_param = True
                 flat_param = param._handle.flat_param
