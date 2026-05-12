@@ -164,6 +164,7 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         self.diffusion_horizon = int(expert.horizon)
         self.diffusion_action_dim = int(expert.action_dim)
         self._flat_noise_dim = self.diffusion_horizon * self.diffusion_action_dim
+        self.dsrl_action_noise_dim = self._flat_noise_dim
 
         if cfg.num_action_chunks != expert.n_action_steps:
             # 允许覆盖但提醒对齐

@@ -12,6 +12,10 @@ precision: "32"
 num_action_chunks: 8
 action_dim: 14
 n_obs_steps: 2
+# Full initial-noise size consumed by RDT denoising, normally
+# common.action_chunk_size(64) * action_dim(14). Keep this aligned with
+# the RDT server meta if you change the base RDT config.
+dsrl_action_noise_dim: 896
 
 is_lora: false
 lora_rank: 32

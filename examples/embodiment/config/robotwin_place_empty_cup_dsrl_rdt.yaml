@@ -66,7 +66,10 @@ algorithm:
   entropy_tuning:
     alpha_type: softplus
     initial_alpha: 1.0
-    target_entropy: -32
+    # RDT-170M uses the full diffusion initial-noise tensor as the DSRL action
+    # (typically 64 * 14 = 896 dims). `auto_half_action_dim` starts less
+    # aggressively than `-action_dim` and can be overridden for sweeps.
+    target_entropy: ${oc.env:RLINF_RDT_DSRL_TARGET_ENTROPY,auto_half_action_dim}
     optim:
       lr: 3.0e-4
       lr_scheduler: torch_constant
@@ -114,6 +117,8 @@ env:
     assets_path: ${robotwin_root}
     seeds_path: ${oc.env:REPO_PATH}/rlinf/envs/robotwin/seeds/train_seeds.json
     center_crop: False
+    debug_reward_trace: True
+    debug_action_trace: True
     backend: client
     server_addr: ${oc.env:ROBOTWIN_SERVER_ADDR,127.0.0.1:8765}
     client_validate_embodiment: true
@@ -135,6 +140,8 @@ env:
     assets_path: ${robotwin_root}
     seeds_path: ${oc.env:REPO_PATH}/rlinf/envs/robotwin/seeds/eval_seeds.json
     center_crop: False
+    debug_reward_trace: True
+    debug_action_trace: True
     backend: client
     server_addr: ${oc.env:ROBOTWIN_SERVER_ADDR,127.0.0.1:8765}
     client_validate_embodiment: true
@@ -175,6 +182,8 @@ actor:
     num_action_chunks: 8
     action_dim: 14
     n_obs_steps: 2
+    # Full RDT denoising noise dim, independent of executed chunk length.
+    dsrl_action_noise_dim: 896
     use_dsrl: true
     add_q_head: true
     q_head_type: "default"

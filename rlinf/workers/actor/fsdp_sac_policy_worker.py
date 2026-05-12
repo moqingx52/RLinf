@@ -140,10 +140,7 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             dtype=self.torch_dtype,
         )
         if alpha_type != "fixed_alpha":
-            self.target_entropy = self.cfg.algorithm.entropy_tuning.get(
-                "target_entropy",
-                -self.cfg.actor.model.action_dim,
-            )
+            self.target_entropy = self._resolve_target_entropy()
 
             self.alpha_optimizer = torch.optim.Adam(
                 self.entropy_temp.parameters(),
@@ -248,6 +245,39 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
         assert self.target_update_type in ["all", "q_head_only"], (
             f"{self.target_update_type=} is not suppported!"
         )
+
+    def _resolve_target_entropy(self) -> float:
+        configured = OmegaConf.select(
+            self.cfg,
+            "algorithm.entropy_tuning.target_entropy",
+            default=None,
+        )
+        if configured is not None:
+            if isinstance(configured, str):
+                key = configured.strip().lower()
+                if key not in {"auto", "auto_action_dim", "auto_half_action_dim"}:
+                    return float(configured)
+            else:
+                return float(configured)
+        else:
+            key = "auto_action_dim"
+
+        action_dim = OmegaConf.select(
+            self.cfg.actor.model,
+            "dsrl_action_noise_dim",
+            default=None,
+        )
+        if action_dim is None:
+            action_dim = getattr(self.model, "dsrl_action_noise_dim", None)
+        if action_dim is None:
+            action_dim = getattr(self.model, "_flat_noise_dim", None)
+        if action_dim is None:
+            action_dim = self.cfg.actor.model.action_dim
+
+        action_dim = float(action_dim)
+        if key == "auto_half_action_dim":
+            return -0.5 * action_dim
+        return -action_dim
 
     def _init_target_shadow(self):
         """Create persistent float32 shadow of target model parameters.
