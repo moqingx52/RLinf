@@ -279,6 +279,14 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             return -0.5 * action_dim
         return -action_dim
 
+    def _coerce_target_entropy(self, target_entropy) -> float:
+        """Normalize configured target entropy to a numeric scalar."""
+        if isinstance(target_entropy, str):
+            key = target_entropy.strip().lower()
+            if key in {"auto", "auto_action_dim", "auto_half_action_dim"}:
+                return self._resolve_target_entropy()
+        return float(target_entropy)
+
     def _init_target_shadow(self):
         """Create persistent float32 shadow of target model parameters.
 
@@ -574,7 +582,10 @@ class EmbodiedSACFSDPPolicy(EmbodiedFSDPActor):
             log_pi = log_pi.sum(dim=-1, keepdim=True)
 
         alpha = self.entropy_temp.compute_alpha()
-        alpha_loss = -alpha * (log_pi.mean() + self.target_entropy)
+        target_entropy = self._coerce_target_entropy(self.target_entropy)
+        # Keep normalized value to avoid repeated parsing in future updates.
+        self.target_entropy = target_entropy
+        alpha_loss = -alpha * (log_pi.mean() + target_entropy)
         return alpha_loss
 
     @Worker.timer("update_one_epoch")
