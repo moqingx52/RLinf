@@ -124,7 +124,9 @@ class FSDPStrategy(FSDPStrategyBase):
             - offload_grad (bool): Whether to offload gradients or not.
         """
         for _, param in model.named_parameters():
+            is_fsdp_managed_param = False
             if hasattr(param, "_handle") and param._handle is not None:
+                is_fsdp_managed_param = True
                 flat_param = param._handle.flat_param
                 if (
                     hasattr(flat_param, "_local_shard")
@@ -137,9 +139,13 @@ class FSDPStrategy(FSDPStrategyBase):
                     flat_param.data = flat_param.data.to("cpu", non_blocking=True)
                     flat_param._local_shard = flat_param.data
             elif hasattr(param, "_local_shard") and param._local_shard is not None:
+                is_fsdp_managed_param = True
                 param._local_shard = param._local_shard.to("cpu", non_blocking=True)
 
-            if param.data is not None:
+            # For use_orig_params=True, rebinding each sliced orig-param `.data` can
+            # break its view relationship with flat_param and trigger FSDP writeback
+            # shape mismatch in later forwards.
+            if not is_fsdp_managed_param and param.data is not None:
                 param.data = param.data.to("cpu", non_blocking=True)
 
             if offload_grad and param.grad is not None:
@@ -160,7 +166,9 @@ class FSDPStrategy(FSDPStrategyBase):
 
         """
         for _, param in model.named_parameters():
+            is_fsdp_managed_param = False
             if hasattr(param, "_handle") and param._handle is not None:
+                is_fsdp_managed_param = True
                 flat_param = param._handle.flat_param
                 if (
                     hasattr(flat_param, "_local_shard")
@@ -173,9 +181,12 @@ class FSDPStrategy(FSDPStrategyBase):
                     flat_param.data = flat_param.data.to(device, non_blocking=True)
                     flat_param._local_shard = flat_param.data
             elif hasattr(param, "_local_shard") and param._local_shard is not None:
+                is_fsdp_managed_param = True
                 param._local_shard = param._local_shard.to(device, non_blocking=True)
 
-            if param.data is not None:
+            # Keep FSDP-managed params attached to flat storage; move only
+            # non-managed params directly via param.data.
+            if not is_fsdp_managed_param and param.data is not None:
                 param.data = param.data.to(device, non_blocking=True)
 
             if onload_grad and param.grad is not None:
