@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
@@ -60,9 +62,32 @@ class RdtPolicyForRLinf(nn.Module, BasePolicy):
         self._maybe_inject_lora()
 
     def _build_rdt_bundle(self, cfg: RdtPolicyConfig):
+        candidate_roots: list[Path] = []
+        env_root = os.environ.get("ROBOTWIN_ROOT", "").strip()
+        if env_root:
+            env_path = Path(env_root).resolve()
+            if env_path.name == "RDT":
+                candidate_roots.append(env_path)
+            else:
+                candidate_roots.append(env_path / "policy" / "RDT")
+        for source in (cfg.config_path, cfg.ckpt_path):
+            if not source:
+                continue
+            src_path = Path(source).expanduser().resolve()
+            for idx in range(len(src_path.parts) - 1):
+                if src_path.parts[idx: idx + 2] == ("policy", "RDT"):
+                    candidate_roots.append(Path(*src_path.parts[: idx + 2]))
+                    break
+        for rdt_root in dict.fromkeys(candidate_roots):
+            rdt_models = rdt_root / "models"
+            rdt_scripts = rdt_root / "scripts"
+            for module_path in (rdt_root, rdt_models, rdt_scripts):
+                module_path_str = str(module_path)
+                if module_path_str not in sys.path:
+                    sys.path.insert(0, module_path_str)
         try:
-            from policy.RDT.multimodal_encoder.t5_encoder import T5Embedder
-            from policy.RDT.scripts.agilex_model import create_model
+            from multimodal_encoder.t5_encoder import T5Embedder
+            from agilex_model import create_model
         except ImportError as err:
             raise ImportError(
                 "未找到 RoboTwin RDT 依赖，请将 RoboTwin 根目录加入 PYTHONPATH。"
