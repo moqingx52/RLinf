@@ -1,7 +1,7 @@
 # RDT LoRA（第一阶段任务适配）
 model_type: "rdt_lora"
 
-ckpt_path: ${oc.env:ROBOTWIN_RDT_CKPT,/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup/latest.safetensors}
+ckpt_path: ${oc.env:ROBOTWIN_RDT_CKPT,/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_only_170m/checkpoint-20000}
 config_path: ${oc.env:ROBOTWIN_RDT_CONFIG,/workspace/RoboTwin/policy/RDT/configs/base.yaml}
 vision_encoder_path: ${oc.env:ROBOTWIN_RDT_VISION_ENCODER,/workspace/RoboTwin/weights/RDT/siglip-so400m-patch14-384}
 text_encoder_path: ${oc.env:ROBOTWIN_RDT_TEXT_ENCODER,/workspace/RoboTwin/weights/RDT/t5-v1_1-xxl}
