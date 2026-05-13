@@ -14,6 +14,7 @@
 
 import os
 import queue
+import shutil
 import threading
 import time
 from collections import defaultdict
@@ -426,6 +427,39 @@ class EmbodiedRunner:
         actor_save_path = os.path.join(base_output_dir, "actor")
         os.makedirs(actor_save_path, exist_ok=True)
         self.actor.save_checkpoint(actor_save_path, self.global_step).wait()
+        self._cleanup_old_checkpoints()
+
+    def _cleanup_old_checkpoints(self):
+        keep_last = int(self.cfg.runner.get("keep_last_checkpoints", -1))
+        if keep_last <= 0:
+            return
+
+        checkpoints_dir = os.path.join(
+            self.cfg.runner.logger.log_path,
+            self.cfg.runner.logger.experiment_name,
+            "checkpoints",
+        )
+        if not os.path.isdir(checkpoints_dir):
+            return
+
+        checkpoint_steps = []
+        for name in os.listdir(checkpoints_dir):
+            if not name.startswith("global_step_"):
+                continue
+            path = os.path.join(checkpoints_dir, name)
+            if not os.path.isdir(path):
+                continue
+            try:
+                step = int(name.split("global_step_")[-1])
+            except ValueError:
+                continue
+            checkpoint_steps.append((step, path))
+
+        checkpoint_steps.sort()
+        stale_checkpoints = checkpoint_steps[:-keep_last]
+        for step, path in stale_checkpoints:
+            self.logger.info(f"Removing old checkpoint at step {step}: {path}")
+            shutil.rmtree(path, ignore_errors=True)
 
     def set_max_steps(self):
         self.num_steps_per_epoch = 1
