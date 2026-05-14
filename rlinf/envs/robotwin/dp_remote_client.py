@@ -149,6 +149,7 @@ class DpRemoteClient:
         main_images: np.ndarray,
         states: np.ndarray,
         init_noise: Optional[np.ndarray] = None,
+        task_description: Optional[str] = None,
     ) -> np.ndarray:
         """main_images: (B,H,W,C) uint8 or float; states: (B,D) float32; init_noise: (B,T,Da) optional."""
         main_images = np.ascontiguousarray(main_images)
@@ -161,6 +162,8 @@ class DpRemoteClient:
             "state_dtype": str(states.dtype),
             "has_init_noise": init_noise is not None,
         }
+        if task_description is not None:
+            kw["task_description"] = str(task_description)
         if init_noise is not None:
             init_noise = np.ascontiguousarray(init_noise, dtype=np.float32)
             blob += init_noise.tobytes()
