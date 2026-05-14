@@ -75,13 +75,41 @@ def _repo_default_config() -> Path:
     )
 
 
-def _load_task_config(config_path: Path) -> dict[str, Any]:
+def _load_task_config(
+    config_path: Path,
+    *,
+    task_name: str,
+    step_lim: int | None,
+) -> dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
-    task_config = cfg.get("task_config")
+    task_config = cfg.get("task_config") if isinstance(cfg.get("task_config"), dict) else cfg
     if not isinstance(task_config, dict):
-        raise ValueError(f"{config_path} does not contain a task_config mapping")
+        raise ValueError(f"{config_path} does not contain a yaml mapping")
+    task_config = dict(task_config)
+    task_config.setdefault("task_name", task_name)
+    if step_lim is not None:
+        task_config["step_lim"] = int(step_lim)
+    elif "step_lim" not in task_config:
+        task_config["step_lim"] = _default_step_limit(task_config["task_name"])
     return task_config
+
+
+def _default_step_limit(task_name: str) -> int:
+    for root in (
+        os.environ.get("ROBOTWIN_ROOT"),
+        str(RLINF_ROOT.parent / "RoboTwin"),
+        "/workspace/RoboTwin",
+    ):
+        if not root:
+            continue
+        path = Path(root) / "task_config" / "_eval_step_limit.yml"
+        if path.is_file():
+            with open(path, "r", encoding="utf-8") as f:
+                limits = yaml.safe_load(f) or {}
+            if task_name in limits:
+                return int(limits[task_name])
+    return 500 if task_name == "place_empty_cup" else 1000
 
 
 def _compact_info(info: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +122,8 @@ def _compact_info(info: dict[str, Any]) -> dict[str, Any]:
         "grasped",
         "chunk_len",
         "run_steps",
+        "take_action_cnt",
+        "step_lim",
         "reward_milestones",
         "reward_components",
     )
@@ -137,11 +167,23 @@ def _run_episode(
             raise RuntimeError("RoboTwin observation does not contain full_image")
         if state is None:
             raise RuntimeError("RoboTwin observation does not contain state")
+        left_wrist = obs.get("left_wrist_image")
+        right_wrist = obs.get("right_wrist_image")
+
+        predict_kwargs = {}
+        if left_wrist is not None and right_wrist is not None:
+            predict_kwargs["left_wrist_images"] = np.expand_dims(
+                np.asarray(left_wrist), axis=0
+            )
+            predict_kwargs["right_wrist_images"] = np.expand_dims(
+                np.asarray(right_wrist), axis=0
+            )
 
         actions = expert.predict(
             np.expand_dims(np.asarray(main_image), axis=0),
             np.expand_dims(np.asarray(state, dtype=np.float32).reshape(-1), axis=0),
             task_description=instruction,
+            **predict_kwargs,
         )
         _, rewards, terminated, truncated, infos = env.step(actions)
         reward = float(np.asarray(rewards, dtype=np.float32).reshape(-1)[0])
@@ -186,6 +228,7 @@ def parse_args() -> argparse.Namespace:
         help="RDT checkpoint directory. May be omitted if robotwin_rdt_server was started with --ckpt.",
     )
     parser.add_argument("--config", type=Path, default=_repo_default_config())
+    parser.add_argument("--task-name", default="place_empty_cup")
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument(
         "--seed",
@@ -195,6 +238,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-seed", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--step-lim", type=int, default=None)
+    parser.add_argument(
+        "--no-expert-check",
+        action="store_true",
+        help="Do not filter seeds through RoboTwin play_once success before policy eval.",
+    )
     parser.add_argument("--request-timeout", type=float, default=300.0)
     parser.add_argument(
         "--output-dir",
@@ -206,7 +255,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    task_config = _load_task_config(args.config)
+    task_config = _load_task_config(
+        args.config,
+        task_name=args.task_name,
+        step_lim=args.step_lim,
+    )
     max_steps = int(args.max_steps or task_config.get("step_lim", 200))
     start_seed = int(
         args.start_seed if args.start_seed is not None else 100000 * (1 + args.seed)
@@ -243,13 +296,26 @@ def main() -> None:
         )
 
         results: list[dict[str, Any]] = []
-        for ep in range(args.episodes):
-            seed = start_seed + ep
+        seed_cursor = start_seed
+        ep = 0
+        while ep < args.episodes:
+            seed = seed_cursor
+            seed_cursor += 1
+            if not args.no_expert_check:
+                seed_check = env.check_seeds([seed])[0]
+                if not seed_check.get("play_once_success", False):
+                    print(
+                        "[rdt-smoke] "
+                        f"skip_seed={seed} expert_check={json.dumps(seed_check, default=_json_default)}",
+                        flush=True,
+                    )
+                    continue
             result = _run_episode(env=env, expert=expert, seed=seed, max_steps=max_steps)
             results.append(result)
+            ep += 1
             print(
                 "[rdt-smoke] "
-                f"episode={ep + 1}/{args.episodes} seed={seed} "
+                f"episode={ep}/{args.episodes} seed={seed} "
                 f"success={int(result['success'])} return={result['return']:.4f} "
                 f"steps={result['steps']} "
                 "last_info="

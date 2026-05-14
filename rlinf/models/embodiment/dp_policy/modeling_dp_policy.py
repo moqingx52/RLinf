@@ -98,13 +98,29 @@ class RemoteDpExpertModule(torch.nn.Module):
         main_images: torch.Tensor,
         states: torch.Tensor,
         init_noise: Optional[torch.Tensor],
+        wrist_images: Optional[torch.Tensor] = None,
+        task_descriptions: Optional[Sequence[str]] = None,
     ) -> torch.Tensor:
         main_np = main_images.detach().cpu().numpy()
         st_np = states.detach().cpu().numpy()
         noise_np = None
         if init_noise is not None:
             noise_np = init_noise.detach().cpu().numpy()
-        out_np = self._client.predict(main_np, st_np, noise_np)
+        left_wrist_np = None
+        right_wrist_np = None
+        if wrist_images is not None:
+            wrist_np = wrist_images.detach().cpu().numpy()
+            if wrist_np.ndim >= 5 and wrist_np.shape[1] >= 2:
+                left_wrist_np = wrist_np[:, 0]
+                right_wrist_np = wrist_np[:, 1]
+        out_np = self._client.predict(
+            main_np,
+            st_np,
+            noise_np,
+            left_wrist_images=left_wrist_np,
+            right_wrist_images=right_wrist_np,
+            task_descriptions=task_descriptions,
+        )
         return torch.from_numpy(np.ascontiguousarray(out_np)).to(
             device=main_images.device, dtype=torch.float32
         )
@@ -425,6 +441,8 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         del kwargs  # 预留
         main = env_obs["main_images"]
         states = env_obs["states"]
+        wrist = env_obs.get("wrist_images")
+        task_descriptions = env_obs.get("task_descriptions")
 
         init_noise = None
         noise_flat = None
@@ -442,7 +460,13 @@ class DpPolicyForRL(nn.Module, BasePolicy):
             ).to(dtype=torch.float32, device=main.device)
 
         if self._expert_backend == "remote":
-            chunk_actions = self.dp_expert.remote_predict(main, states, init_noise)
+            chunk_actions = self.dp_expert.remote_predict(
+                main,
+                states,
+                init_noise,
+                wrist_images=wrist,
+                task_descriptions=task_descriptions,
+            )
             self._remote_history_initialized = True
         else:
             step = _rlinf_to_dp_timestep(main, states)

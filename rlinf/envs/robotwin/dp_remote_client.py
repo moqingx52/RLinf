@@ -150,8 +150,11 @@ class DpRemoteClient:
         states: np.ndarray,
         init_noise: Optional[np.ndarray] = None,
         task_description: Optional[str] = None,
+        left_wrist_images: Optional[np.ndarray] = None,
+        right_wrist_images: Optional[np.ndarray] = None,
+        task_descriptions: Optional[Sequence[str]] = None,
     ) -> np.ndarray:
-        """main_images: (B,H,W,C) uint8 or float; states: (B,D) float32; init_noise: (B,T,Da) optional."""
+        """main_images: (B,H,W,C); states: (B,D); wrist/init_noise optional."""
         main_images = np.ascontiguousarray(main_images)
         states = np.ascontiguousarray(states, dtype=np.float32)
         blob = main_images.tobytes() + states.tobytes()
@@ -164,6 +167,23 @@ class DpRemoteClient:
         }
         if task_description is not None:
             kw["task_description"] = str(task_description)
+        if task_descriptions is not None:
+            kw["task_descriptions"] = [str(x) for x in task_descriptions]
+        if left_wrist_images is not None and right_wrist_images is not None:
+            left_wrist_images = np.ascontiguousarray(left_wrist_images)
+            right_wrist_images = np.ascontiguousarray(right_wrist_images)
+            blob += left_wrist_images.tobytes() + right_wrist_images.tobytes()
+            kw.update(
+                {
+                    "has_wrist_images": True,
+                    "left_wrist_shape": list(left_wrist_images.shape),
+                    "left_wrist_dtype": str(left_wrist_images.dtype),
+                    "right_wrist_shape": list(right_wrist_images.shape),
+                    "right_wrist_dtype": str(right_wrist_images.dtype),
+                }
+            )
+        else:
+            kw["has_wrist_images"] = False
         if init_noise is not None:
             init_noise = np.ascontiguousarray(init_noise, dtype=np.float32)
             blob += init_noise.tobytes()

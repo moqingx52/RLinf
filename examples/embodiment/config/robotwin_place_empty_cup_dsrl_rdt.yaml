@@ -110,7 +110,7 @@ env:
   train:
     total_num_envs: 1
     reward_coef: ${algorithm.reward_coef}
-    max_episode_steps: 198
+    max_episode_steps: 500
     max_steps_per_rollout_epoch: 200
     auto_reset: False
     group_size: ${algorithm.group_size}
@@ -123,15 +123,15 @@ env:
     server_addr: ${oc.env:ROBOTWIN_SERVER_ADDR,127.0.0.1:8765}
     client_validate_embodiment: true
     task_config:
-      step_lim: 198
+      step_lim: 500
       embodiment: [aloha-agilex]
       camera:
-        collect_wrist_camera: false
+        collect_wrist_camera: true
   eval:
     total_num_envs: 1
     auto_reset: True
     ignore_terminations: True
-    max_episode_steps: 198
+    max_episode_steps: 500
     reward_coef: ${algorithm.reward_coef}
     max_steps_per_rollout_epoch: 200
     group_size: 1
@@ -149,10 +149,10 @@ env:
       save_video: True
       video_base_dir: ${runner.logger.log_path}/video/eval
     task_config:
-      step_lim: 198
+      step_lim: 500
       embodiment: [aloha-agilex]
       camera:
-        collect_wrist_camera: false
+        collect_wrist_camera: true
 
 rollout:
   group_name: "RolloutGroup"
