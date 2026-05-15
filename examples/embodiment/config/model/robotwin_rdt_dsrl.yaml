@@ -9,7 +9,7 @@ ckpt_path: ${oc.env:ROBOTWIN_RDT_CKPT,/workspace/RoboTwin/policy/RDT/checkpoints
 
 precision: "32"
 
-num_action_chunks: 8
+num_action_chunks: 64
 action_dim: 14
 n_obs_steps: 2
 # Full initial-noise size consumed by RDT denoising, normally
@@ -21,6 +21,9 @@ is_lora: false
 lora_rank: 32
 
 use_dsrl: true
+# Start from a small perturbation of the 64-step RDT expert so rollout can still
+# collect occasional successful examples while SAC learns a correction.
+dsrl_noise_scale: 0.05
 
 dsrl_state_dim: 14
 dsrl_image_latent_dim: 64

@@ -142,6 +142,7 @@ class DpPolicyConfig:
     num_action_chunks: int = 6
     action_dim: int = 14
     use_dsrl: bool = False
+    dsrl_noise_scale: float = 1.0
     dsrl_state_dim: int = 14
     dsrl_image_latent_dim: int = 64
     dsrl_state_latent_dim: int = 64
@@ -194,6 +195,7 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         self._remote_history_initialized = False
 
         self.use_dsrl = cfg.use_dsrl
+        self.dsrl_noise_scale = float(cfg.dsrl_noise_scale)
         if self.use_dsrl:
             from rlinf.models.embodiment.modules.compact_encoders import (
                 CompactMultiQHead,
@@ -358,6 +360,8 @@ class DpPolicyForRL(nn.Module, BasePolicy):
         action_noise, logprobs = self.dsrl_action_noise_net.sample(
             feat, deterministic=deterministic
         )
+        if self.dsrl_noise_scale != 1.0:
+            action_noise = action_noise * self.dsrl_noise_scale
         return action_noise, logprobs, None
 
     def sac_q_forward(

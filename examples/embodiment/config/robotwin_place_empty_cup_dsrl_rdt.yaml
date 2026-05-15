@@ -111,7 +111,9 @@ env:
     total_num_envs: 1
     reward_coef: ${algorithm.reward_coef}
     max_episode_steps: 500
-    max_steps_per_rollout_epoch: 200
+    # Keep this divisible by actor.model.num_action_chunks. With 64-step RDT
+    # chunks, 512 lets one rollout cover a full 500-step RoboTwin episode.
+    max_steps_per_rollout_epoch: 512
     auto_reset: False
     group_size: ${algorithm.group_size}
     assets_path: ${robotwin_root}
@@ -133,7 +135,8 @@ env:
     ignore_terminations: True
     max_episode_steps: 500
     reward_coef: ${algorithm.reward_coef}
-    max_steps_per_rollout_epoch: 200
+    # Keep eval rollout aligned with the 64-step RDT server used by smoke eval.
+    max_steps_per_rollout_epoch: 512
     group_size: 1
     use_fixed_reset_state_ids: True
     is_eval: True
@@ -179,12 +182,17 @@ actor:
     ckpt_path: ${oc.env:ROBOTWIN_RDT_CKPT,/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_only_170m/checkpoint-20000}
     expert_backend: remote
     dp_server_addr: ${oc.env:ROBOTWIN_RDT_SERVER_ADDR,127.0.0.1:8769}
-    num_action_chunks: 8
+    # Must match robotwin_rdt_server --n-action-steps. The current smoke eval
+    # produced successes under the official 64-step RDT execution condition.
+    num_action_chunks: 64
     action_dim: 14
     n_obs_steps: 2
     # Full RDT denoising noise dim, independent of executed chunk length.
     dsrl_action_noise_dim: 896
     use_dsrl: true
+    # Keep early rollouts close to the smoke-eval RDT expert while still
+    # allowing SAC to learn a steering correction through init_noise.
+    dsrl_noise_scale: 0.05
     add_q_head: true
     q_head_type: "default"
     num_q_heads: 10
