@@ -41,6 +41,9 @@ class RoboTwinEnv(gym.Env):
         worker_info,
         record_metrics=True,
     ):
+        if cfg.get("override_cfg", None):
+            cfg = OmegaConf.merge(cfg, cfg.override_cfg)
+
         env_seed = cfg.seed
         self.seed = env_seed + seed_offset
         self.num_envs = num_envs
