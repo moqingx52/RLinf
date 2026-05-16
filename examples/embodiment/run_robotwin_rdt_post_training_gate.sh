@@ -45,6 +45,7 @@ RDT_ACTION_STEPS="${RDT_ACTION_STEPS:-64}"
 RDT_SUCCESS_DATASET_DIR="${RDT_SUCCESS_DATASET_DIR:-${ROBOTWIN_ROOT}/policy/RDT/training_data/place_empty_cup_rdt_success}"
 RDT_SUCCESS_TARGET="${RDT_SUCCESS_TARGET:-50}"
 RDT_SUCCESS_MAX_ATTEMPTS="${RDT_SUCCESS_MAX_ATTEMPTS:-200}"
+RDT_SUCCESS_EXPERT_CHECK="${RDT_SUCCESS_EXPERT_CHECK:-0}"
 RDT_LORA_CONFIG_NAME="${RDT_LORA_CONFIG_NAME:-place_empty_cup_success_lora_170m}"
 RDT_LORA_ADAPTER_DEFAULT="${ROBOTWIN_ROOT}/policy/RDT/checkpoints/${RDT_LORA_CONFIG_NAME}/lora_adapter"
 
@@ -71,7 +72,7 @@ Important env overrides:
   ROBOTWIN_RDT_VISION_ENCODER, ROBOTWIN_RDT_TEXT_ENCODER
   ROBOTWIN_RDT_LORA_ADAPTER, ROBOTWIN_RDT_MERGE_LORA
   ROBOTWIN_SERVER_ADDR, ROBOTWIN_RDT_SERVER_ADDR
-  RDT_SUCCESS_DATASET_DIR, RDT_SUCCESS_TARGET, RDT_SUCCESS_MAX_ATTEMPTS, RDT_LORA_CONFIG_NAME
+  RDT_SUCCESS_DATASET_DIR, RDT_SUCCESS_TARGET, RDT_SUCCESS_MAX_ATTEMPTS, RDT_SUCCESS_EXPERT_CHECK, RDT_LORA_CONFIG_NAME
   RDT_GPU, ENV_GPU, TRAIN_GPU, EPISODES, SEED, STEP_LIM
 USAGE
 }
@@ -97,6 +98,7 @@ print_context() {
 [rdt-gate] ENV_CONFIG=${ENV_CONFIG}
 [rdt-gate] RDT_ACTION_STEPS=${RDT_ACTION_STEPS}
 [rdt-gate] RDT_SUCCESS_DATASET_DIR=${RDT_SUCCESS_DATASET_DIR}
+[rdt-gate] RDT_SUCCESS_EXPERT_CHECK=${RDT_SUCCESS_EXPERT_CHECK}
 [rdt-gate] RDT_LORA_CONFIG_NAME=${RDT_LORA_CONFIG_NAME}
 EOF
 }
@@ -168,6 +170,10 @@ collect_success_dataset() {
   mkdir -p "${RDT_SUCCESS_DATASET_DIR}"
   print_context
   cd "${REPO_PATH}"
+  local expert_check_args=()
+  if [ "${RDT_SUCCESS_EXPERT_CHECK}" = "0" ] || [ "${RDT_SUCCESS_EXPERT_CHECK}" = "false" ]; then
+    expert_check_args+=(--no-expert-check)
+  fi
   python toolkits/eval_scripts_robotwin/eval_remote_rdt_smoke.py \
     --episodes "${EPISODES}" \
     --seed "${SEED}" \
@@ -177,6 +183,7 @@ collect_success_dataset() {
     --collect-success-dataset-dir "${RDT_SUCCESS_DATASET_DIR}" \
     --target-successes "${RDT_SUCCESS_TARGET}" \
     --max-attempts "${RDT_SUCCESS_MAX_ATTEMPTS}" \
+    "${expert_check_args[@]}" \
     "$@"
 }
 

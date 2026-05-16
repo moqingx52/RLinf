@@ -327,6 +327,7 @@ def main() -> None:
         results: list[dict[str, Any]] = []
         seed_cursor = start_seed
         ep = 0
+        attempts = 0
         successes = 0
         target_successes = args.target_successes
         max_attempts = int(args.max_attempts or args.episodes)
@@ -336,11 +337,12 @@ def main() -> None:
         def _should_continue() -> bool:
             if target_successes is None:
                 return ep < args.episodes
-            return ep < max_attempts and successes < target_successes
+            return attempts < max_attempts and successes < target_successes
 
         while _should_continue():
             seed = seed_cursor
             seed_cursor += 1
+            attempts += 1
             if not args.no_expert_check:
                 seed_check = env.check_seeds([seed])[0]
                 if not seed_check.get("play_once_success", False):
@@ -357,7 +359,10 @@ def main() -> None:
             if target_successes is None:
                 progress = f"{ep}/{args.episodes}"
             else:
-                progress = f"{ep}/{max_attempts} successes={successes}/{target_successes}"
+                progress = (
+                    f"episodes={ep} attempts={attempts}/{max_attempts} "
+                    f"successes={successes}/{target_successes}"
+                )
             print(
                 "[rdt-smoke] "
                 f"episode={progress} seed={seed} "
@@ -374,6 +379,7 @@ def main() -> None:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "task": task_config.get("task_name"),
             "episodes": int(episode_count),
+            "attempts": int(attempts),
             "requested_episodes": int(args.episodes),
             "target_successes": args.target_successes,
             "max_attempts": args.max_attempts,
