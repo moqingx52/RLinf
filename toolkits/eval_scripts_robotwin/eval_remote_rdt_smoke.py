@@ -265,6 +265,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not filter seeds through RoboTwin play_once success before policy eval.",
     )
+    parser.add_argument(
+        "--seed-check-mode",
+        choices=("none", "setup", "play_once"),
+        default="play_once",
+        help=(
+            "Seed prefilter mode. setup checks reset/render only; play_once also requires "
+            "RoboTwin oracle planner success."
+        ),
+    )
     parser.add_argument("--request-timeout", type=float, default=300.0)
     parser.add_argument(
         "--output-dir",
@@ -292,6 +301,7 @@ def main() -> None:
     start_seed = int(
         args.start_seed if args.start_seed is not None else 100000 * (1 + args.seed)
     )
+    seed_check_mode = "none" if args.no_expert_check else args.seed_check_mode
 
     env_host, env_port = parse_server_addr(args.env_server_addr)
     env = None
@@ -320,6 +330,7 @@ def main() -> None:
         print(
             f"[rdt-smoke] task={task_config.get('task_name')} episodes={args.episodes} "
             f"start_seed={start_seed} max_steps={max_steps} "
+            f"seed_check_mode={seed_check_mode} "
             f"collect_success_dataset_dir={task_config.get('rdt_success_dataset_dir', '')}",
             flush=True,
         )
@@ -343,12 +354,17 @@ def main() -> None:
             seed = seed_cursor
             seed_cursor += 1
             attempts += 1
-            if not args.no_expert_check:
+            if seed_check_mode != "none":
                 seed_check = env.check_seeds([seed])[0]
-                if not seed_check.get("play_once_success", False):
+                if seed_check_mode == "setup":
+                    seed_ok = bool(seed_check.get("setup_demo_success", False))
+                else:
+                    seed_ok = bool(seed_check.get("play_once_success", False))
+                if not seed_ok:
                     print(
                         "[rdt-smoke] "
-                        f"skip_seed={seed} expert_check={json.dumps(seed_check, default=_json_default)}",
+                        f"skip_seed={seed} seed_check_mode={seed_check_mode} "
+                        f"expert_check={json.dumps(seed_check, default=_json_default)}",
                         flush=True,
                     )
                     continue
@@ -386,6 +402,7 @@ def main() -> None:
             "successes": int(successes),
             "success_rate": float(successes / max(1, episode_count)),
             "start_seed": int(start_seed),
+            "seed_check_mode": seed_check_mode,
             "max_steps": int(max_steps),
             "env_server_addr": args.env_server_addr,
             "rdt_server_addr": args.rdt_server_addr,
