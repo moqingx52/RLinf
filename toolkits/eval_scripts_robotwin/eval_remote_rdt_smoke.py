@@ -145,6 +145,32 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
+def _sync_rdt_history(expert: DpRemoteClient, history: list[dict[str, Any]]) -> None:
+    if not history:
+        return
+    main = []
+    left = []
+    right = []
+    for obs in history[-2:]:
+        main_img = obs.get("full_image")
+        left_img = obs.get("left_wrist_image")
+        right_img = obs.get("right_wrist_image")
+        if main_img is None:
+            return
+        if left_img is None:
+            left_img = main_img
+        if right_img is None:
+            right_img = main_img
+        main.append(np.asarray(main_img))
+        left.append(np.asarray(left_img))
+        right.append(np.asarray(right_img))
+    expert.set_image_history(
+        np.expand_dims(np.stack(main, axis=0), axis=0),
+        np.expand_dims(np.stack(left, axis=0), axis=0),
+        np.expand_dims(np.stack(right, axis=0), axis=0),
+    )
+
+
 def _run_episode(
     *,
     env: ClientVectorEnv,
@@ -193,7 +219,14 @@ def _run_episode(
             task_description=instruction,
             **predict_kwargs,
         )
-        _, rewards, terminated, truncated, infos = env.step(actions)
+        step_meta = env.step_with_metadata(actions)
+        rewards = step_meta["rewards"]
+        terminated = step_meta["terminated"]
+        truncated = step_meta["truncated"]
+        infos = step_meta["infos"]
+        rdt_history = step_meta.get("rdt_history") or []
+        if rdt_history:
+            _sync_rdt_history(expert, rdt_history[0])
         reward = float(np.asarray(rewards, dtype=np.float32).reshape(-1)[0])
         term = bool(np.asarray(terminated, dtype=np.bool_).reshape(-1)[0])
         trunc = bool(np.asarray(truncated, dtype=np.bool_).reshape(-1)[0])

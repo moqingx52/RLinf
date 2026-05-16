@@ -144,6 +144,44 @@ class DpRemoteClient:
         meta, _ = self._call("dp_reset_history", **kw)
         return dict(meta)
 
+    def set_image_history(
+        self,
+        main_images: np.ndarray,
+        left_wrist_images: np.ndarray,
+        right_wrist_images: np.ndarray,
+    ) -> dict[str, Any]:
+        """Set RDT image history from true env observations.
+
+        Arrays are shaped ``(B, Hn, H, W, C)`` where ``Hn`` is 1 or 2. A
+        two-frame history matches the official RDT deploy path for the next
+        prediction.
+        """
+        main_images = np.ascontiguousarray(main_images)
+        left_wrist_images = np.ascontiguousarray(left_wrist_images)
+        right_wrist_images = np.ascontiguousarray(right_wrist_images)
+        if main_images.ndim != 5:
+            raise ValueError(f"main_images must be (B,Hn,H,W,C), got {main_images.shape}")
+        if left_wrist_images.shape != main_images.shape:
+            raise ValueError(
+                f"left_wrist_images shape {left_wrist_images.shape} != {main_images.shape}"
+            )
+        if right_wrist_images.shape != main_images.shape:
+            raise ValueError(
+                f"right_wrist_images shape {right_wrist_images.shape} != {main_images.shape}"
+            )
+        blob = main_images.tobytes() + left_wrist_images.tobytes() + right_wrist_images.tobytes()
+        meta, _ = self._call(
+            "dp_set_image_history",
+            blob=blob,
+            main_shape=list(main_images.shape),
+            main_dtype=str(main_images.dtype),
+            left_wrist_shape=list(left_wrist_images.shape),
+            left_wrist_dtype=str(left_wrist_images.dtype),
+            right_wrist_shape=list(right_wrist_images.shape),
+            right_wrist_dtype=str(right_wrist_images.dtype),
+        )
+        return dict(meta)
+
     def predict(
         self,
         main_images: np.ndarray,

@@ -217,6 +217,12 @@ class ClientVectorEnv:
         if blob and "obs_meta" in meta:
             meta["obs"] = _deserialize_obs_list(meta["obs_meta"], blob)
             del meta["obs_meta"]
+        if blob and "rdt_history_meta" in meta:
+            meta["rdt_history"] = [
+                _deserialize_obs_list(history, blob)
+                for history in meta["rdt_history_meta"].get("history", [])
+            ]
+            del meta["rdt_history_meta"]
         return meta
 
     def _call(self, op: str, **kwargs: Any) -> dict[str, Any]:
@@ -281,6 +287,17 @@ class ClientVectorEnv:
             meta["truncated"],
             meta["infos"],
         )
+
+    def step_with_metadata(self, actions: np.ndarray) -> dict[str, Any]:
+        actions_list = np.asarray(actions, dtype=np.float64).tolist()
+        try:
+            return self._call("step", actions=actions_list)
+        except RemoteEnvError as e:
+            if e.should_recreate_env:
+                raise
+            if e.can_retry:
+                return self._call("step", actions=actions_list)
+            raise
 
     def reset(self, env_idx=None, env_seeds=None):
         payload: dict[str, Any] = {}
