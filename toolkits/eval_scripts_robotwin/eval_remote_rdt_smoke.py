@@ -116,6 +116,9 @@ def _compact_info(info: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "success",
         "reward_sum",
+        "episode_return",
+        "rdt_success_dataset_saved",
+        "rdt_success_dataset_episode_dir",
         "xy_dist",
         "z_abs",
         "lift_height",
@@ -231,6 +234,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task-name", default="place_empty_cup")
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument(
+        "--collect-success-dataset-dir",
+        type=Path,
+        default=None,
+        help="When set, ask RoboTwin env server to write successful episodes as processed RDT HDF5 data.",
+    )
+    parser.add_argument(
+        "--target-successes",
+        type=int,
+        default=None,
+        help="Stop after this many successful collected episodes. Uses --episodes only when unset.",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=None,
+        help="Maximum evaluated policy episodes when collecting by target successes.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=0,
@@ -260,6 +281,13 @@ def main() -> None:
         task_name=args.task_name,
         step_lim=args.step_lim,
     )
+    if args.collect_success_dataset_dir is not None:
+        collect_dir = args.collect_success_dataset_dir.resolve()
+        collect_dir.mkdir(parents=True, exist_ok=True)
+        task_config["rdt_success_dataset_dir"] = str(collect_dir)
+        camera_cfg = dict(task_config.get("camera") or {})
+        camera_cfg["collect_wrist_camera"] = True
+        task_config["camera"] = camera_cfg
     max_steps = int(args.max_steps or task_config.get("step_lim", 200))
     start_seed = int(
         args.start_seed if args.start_seed is not None else 100000 * (1 + args.seed)
@@ -291,14 +319,26 @@ def main() -> None:
         )
         print(
             f"[rdt-smoke] task={task_config.get('task_name')} episodes={args.episodes} "
-            f"start_seed={start_seed} max_steps={max_steps}",
+            f"start_seed={start_seed} max_steps={max_steps} "
+            f"collect_success_dataset_dir={task_config.get('rdt_success_dataset_dir', '')}",
             flush=True,
         )
 
         results: list[dict[str, Any]] = []
         seed_cursor = start_seed
         ep = 0
-        while ep < args.episodes:
+        successes = 0
+        target_successes = args.target_successes
+        max_attempts = int(args.max_attempts or args.episodes)
+        if target_successes is not None and max_attempts < target_successes:
+            raise ValueError("--max-attempts must be >= --target-successes")
+
+        def _should_continue() -> bool:
+            if target_successes is None:
+                return ep < args.episodes
+            return ep < max_attempts and successes < target_successes
+
+        while _should_continue():
             seed = seed_cursor
             seed_cursor += 1
             if not args.no_expert_check:
@@ -313,9 +353,14 @@ def main() -> None:
             result = _run_episode(env=env, expert=expert, seed=seed, max_steps=max_steps)
             results.append(result)
             ep += 1
+            successes += int(bool(result["success"]))
+            if target_successes is None:
+                progress = f"{ep}/{args.episodes}"
+            else:
+                progress = f"{ep}/{max_attempts} successes={successes}/{target_successes}"
             print(
                 "[rdt-smoke] "
-                f"episode={ep}/{args.episodes} seed={seed} "
+                f"episode={progress} seed={seed} "
                 f"success={int(result['success'])} return={result['return']:.4f} "
                 f"steps={result['steps']} "
                 "last_info="
@@ -324,18 +369,26 @@ def main() -> None:
             )
 
         successes = sum(1 for r in results if r["success"])
+        episode_count = len(results)
         summary = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "task": task_config.get("task_name"),
-            "episodes": int(args.episodes),
+            "episodes": int(episode_count),
+            "requested_episodes": int(args.episodes),
+            "target_successes": args.target_successes,
+            "max_attempts": args.max_attempts,
             "successes": int(successes),
-            "success_rate": float(successes / max(1, args.episodes)),
+            "success_rate": float(successes / max(1, episode_count)),
             "start_seed": int(start_seed),
             "max_steps": int(max_steps),
             "env_server_addr": args.env_server_addr,
             "rdt_server_addr": args.rdt_server_addr,
             "ckpt": args.ckpt,
             "dp_meta": dp_meta,
+            "collect_success_dataset_dir": task_config.get(
+                "rdt_success_dataset_dir",
+                None,
+            ),
         }
 
         args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -351,7 +404,7 @@ def main() -> None:
             json.dump(summary, f, indent=2, default=_json_default, ensure_ascii=False)
 
         print(
-            f"[rdt-smoke] success_rate={successes}/{args.episodes} "
+            f"[rdt-smoke] success_rate={successes}/{episode_count} "
             f"({summary['success_rate'] * 100:.1f}%) "
             f"result_path={result_path} summary_path={summary_path}",
             flush=True,

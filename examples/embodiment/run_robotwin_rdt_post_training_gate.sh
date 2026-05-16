@@ -33,6 +33,8 @@ export ROBOTWIN_RDT_CKPT="${ROBOTWIN_RDT_CKPT:-${ROBOTWIN_ROOT}/policy/RDT/check
 export ROBOTWIN_RDT_CONFIG="${ROBOTWIN_RDT_CONFIG:-${ROBOTWIN_ROOT}/policy/RDT/configs/base_170m.yaml}"
 export ROBOTWIN_RDT_VISION_ENCODER="${ROBOTWIN_RDT_VISION_ENCODER:-${ROBOTWIN_ROOT}/policy/weights/RDT/siglip-so400m-patch14-384}"
 export ROBOTWIN_RDT_TEXT_ENCODER="${ROBOTWIN_RDT_TEXT_ENCODER:-${ROBOTWIN_ROOT}/policy/weights/RDT/t5-v1_1-xxl}"
+export ROBOTWIN_RDT_LORA_ADAPTER="${ROBOTWIN_RDT_LORA_ADAPTER:-}"
+export ROBOTWIN_RDT_MERGE_LORA="${ROBOTWIN_RDT_MERGE_LORA:-1}"
 
 ENV_CONFIG="${ENV_CONFIG:-${REPO_PATH}/examples/embodiment/config/env/robotwin_place_empty_cup.yaml}"
 TASK_NAME="${TASK_NAME:-place_empty_cup}"
@@ -40,6 +42,11 @@ STEP_LIM="${STEP_LIM:-500}"
 EPISODES="${EPISODES:-100}"
 SEED="${SEED:-0}"
 RDT_ACTION_STEPS="${RDT_ACTION_STEPS:-64}"
+RDT_SUCCESS_DATASET_DIR="${RDT_SUCCESS_DATASET_DIR:-${ROBOTWIN_ROOT}/policy/RDT/training_data/place_empty_cup_rdt_success}"
+RDT_SUCCESS_TARGET="${RDT_SUCCESS_TARGET:-50}"
+RDT_SUCCESS_MAX_ATTEMPTS="${RDT_SUCCESS_MAX_ATTEMPTS:-200}"
+RDT_LORA_CONFIG_NAME="${RDT_LORA_CONFIG_NAME:-place_empty_cup_success_lora_170m}"
+RDT_LORA_ADAPTER_DEFAULT="${ROBOTWIN_ROOT}/policy/RDT/checkpoints/${RDT_LORA_CONFIG_NAME}/lora_adapter"
 
 usage() {
   cat <<'USAGE'
@@ -50,13 +57,21 @@ Commands:
   start-rdt-server     Start RoboTwin/script/robotwin_rdt_server.py with official 64-step RDT settings.
   start-env-server     Start RoboTwin/script/robotwin_env_server.py for place_empty_cup.
   smoke-eval           Run remote RDT policy smoke eval before any RLinf training.
+  collect-success-dataset
+                       Collect successful remote RDT episodes as processed RDT HDF5 data.
+  prepare-success-dataset
+                       Generate per-episode language embeddings for the collected HDF5 data.
+  train-lora           Train a PEFT LoRA adapter on the collected success dataset.
+  smoke-lora           Run remote smoke eval against a server started with the trained LoRA adapter.
   zero-noise-smoke     Run RLinf rollout/SAC smoke with actor.model.dsrl_noise_scale=0.0.
   dsrl-smoke           Run RLinf DSRL smoke with actor.model.dsrl_noise_scale=0.05.
 
 Important env overrides:
   ROBOTWIN_ROOT, ROBOTWIN_RDT_CKPT, ROBOTWIN_RDT_CONFIG
   ROBOTWIN_RDT_VISION_ENCODER, ROBOTWIN_RDT_TEXT_ENCODER
+  ROBOTWIN_RDT_LORA_ADAPTER, ROBOTWIN_RDT_MERGE_LORA
   ROBOTWIN_SERVER_ADDR, ROBOTWIN_RDT_SERVER_ADDR
+  RDT_SUCCESS_DATASET_DIR, RDT_SUCCESS_TARGET, RDT_SUCCESS_MAX_ATTEMPTS, RDT_LORA_CONFIG_NAME
   RDT_GPU, ENV_GPU, TRAIN_GPU, EPISODES, SEED, STEP_LIM
 USAGE
 }
@@ -78,8 +93,11 @@ print_context() {
 [rdt-gate] ROBOTWIN_RDT_SERVER_ADDR=${ROBOTWIN_RDT_SERVER_ADDR}
 [rdt-gate] ROBOTWIN_RDT_CKPT=${ROBOTWIN_RDT_CKPT}
 [rdt-gate] ROBOTWIN_RDT_CONFIG=${ROBOTWIN_RDT_CONFIG}
+[rdt-gate] ROBOTWIN_RDT_LORA_ADAPTER=${ROBOTWIN_RDT_LORA_ADAPTER:-<none>}
 [rdt-gate] ENV_CONFIG=${ENV_CONFIG}
 [rdt-gate] RDT_ACTION_STEPS=${RDT_ACTION_STEPS}
+[rdt-gate] RDT_SUCCESS_DATASET_DIR=${RDT_SUCCESS_DATASET_DIR}
+[rdt-gate] RDT_LORA_CONFIG_NAME=${RDT_LORA_CONFIG_NAME}
 EOF
 }
 
@@ -89,8 +107,18 @@ start_rdt_server() {
   require_file_or_dir "${ROBOTWIN_RDT_CONFIG}" "RDT config"
   require_file_or_dir "${ROBOTWIN_RDT_VISION_ENCODER}" "RDT vision encoder"
   require_file_or_dir "${ROBOTWIN_RDT_TEXT_ENCODER}" "RDT text encoder"
+  if [ -n "${ROBOTWIN_RDT_LORA_ADAPTER}" ]; then
+    require_file_or_dir "${ROBOTWIN_RDT_LORA_ADAPTER}" "RDT LoRA adapter"
+  fi
   print_context
   cd "${ROBOTWIN_ROOT}"
+  local lora_args=()
+  if [ -n "${ROBOTWIN_RDT_LORA_ADAPTER}" ]; then
+    lora_args+=(--lora-adapter-path "${ROBOTWIN_RDT_LORA_ADAPTER}")
+    if [ "${ROBOTWIN_RDT_MERGE_LORA}" = "1" ] || [ "${ROBOTWIN_RDT_MERGE_LORA}" = "true" ]; then
+      lora_args+=(--merge-lora)
+    fi
+  fi
   exec env CUDA_VISIBLE_DEVICES="${RDT_GPU}" python script/robotwin_rdt_server.py \
     --host 0.0.0.0 \
     --port "${RDT_PORT}" \
@@ -101,6 +129,7 @@ start_rdt_server() {
     --device cuda:0 \
     --instruction "Place the empty cup to the target area." \
     --n-action-steps "${RDT_ACTION_STEPS}" \
+    "${lora_args[@]}" \
     "$@"
 }
 
@@ -131,6 +160,54 @@ smoke_eval() {
     --task-name "${TASK_NAME}" \
     --step-lim "${STEP_LIM}" \
     "$@"
+}
+
+collect_success_dataset() {
+  require_file_or_dir "${REPO_PATH}/toolkits/eval_scripts_robotwin/eval_remote_rdt_smoke.py" "remote RDT smoke eval"
+  require_file_or_dir "${ENV_CONFIG}" "RoboTwin env config"
+  mkdir -p "${RDT_SUCCESS_DATASET_DIR}"
+  print_context
+  cd "${REPO_PATH}"
+  python toolkits/eval_scripts_robotwin/eval_remote_rdt_smoke.py \
+    --episodes "${EPISODES}" \
+    --seed "${SEED}" \
+    --config "${ENV_CONFIG}" \
+    --task-name "${TASK_NAME}" \
+    --step-lim "${STEP_LIM}" \
+    --collect-success-dataset-dir "${RDT_SUCCESS_DATASET_DIR}" \
+    --target-successes "${RDT_SUCCESS_TARGET}" \
+    --max-attempts "${RDT_SUCCESS_MAX_ATTEMPTS}" \
+    "$@"
+}
+
+prepare_success_dataset() {
+  require_file_or_dir "${ROBOTWIN_ROOT}/policy/RDT/scripts/prepare_success_dataset.py" "success dataset prepare script"
+  require_file_or_dir "${RDT_SUCCESS_DATASET_DIR}" "RDT success dataset"
+  print_context
+  cd "${ROBOTWIN_ROOT}/policy/RDT"
+  env CUDA_VISIBLE_DEVICES="${RDT_GPU}" python scripts/prepare_success_dataset.py \
+    --dataset-dir "${RDT_SUCCESS_DATASET_DIR}" \
+    --gpu 0 \
+    "$@"
+}
+
+train_lora() {
+  require_file_or_dir "${ROBOTWIN_ROOT}/policy/RDT/finetune.sh" "RDT finetune script"
+  require_file_or_dir "${ROBOTWIN_ROOT}/policy/RDT/model_config/${RDT_LORA_CONFIG_NAME}.yml" "RDT LoRA config"
+  require_file_or_dir "${RDT_SUCCESS_DATASET_DIR}" "RDT success dataset"
+  print_context
+  cd "${ROBOTWIN_ROOT}/policy/RDT"
+  bash finetune.sh "${RDT_LORA_CONFIG_NAME}" "$@"
+}
+
+smoke_lora() {
+  local adapter="${ROBOTWIN_RDT_LORA_ADAPTER:-${RDT_LORA_ADAPTER_DEFAULT}}"
+  require_file_or_dir "${adapter}" "trained RDT LoRA adapter"
+  if [ "${ROBOTWIN_RDT_LORA_ADAPTER:-}" = "" ]; then
+    export ROBOTWIN_RDT_LORA_ADAPTER="${adapter}"
+  fi
+  echo "[rdt-gate] smoke-lora expects start-rdt-server to be running with ROBOTWIN_RDT_LORA_ADAPTER=${ROBOTWIN_RDT_LORA_ADAPTER}" >&2
+  smoke_eval "$@"
 }
 
 train_common() {
@@ -192,6 +269,18 @@ case "$cmd" in
     ;;
   smoke-eval)
     smoke_eval "$@"
+    ;;
+  collect-success-dataset)
+    collect_success_dataset "$@"
+    ;;
+  prepare-success-dataset)
+    prepare_success_dataset "$@"
+    ;;
+  train-lora)
+    train_lora "$@"
+    ;;
+  smoke-lora)
+    smoke_lora "$@"
     ;;
   zero-noise-smoke)
     zero_noise_smoke "$@"

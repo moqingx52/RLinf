@@ -1,6 +1,6 @@
 # RoboTwin × RLinf：拿茶杯（place_empty_cup）RDT 后训练
 
-本文档是 `run.md` 的 RDT 独立版本，覆盖 **RDT remote expert + DSRL steering** 训练链路。  
+本文档是 `run.md` 的 RDT 独立版本，覆盖 **RDT remote expert + 成功轨迹 LoRA + DSRL steering** 训练链路。  
 路径约定为 Docker/Linux（`/workspace/...`）。
 
 /workspace# tree -L 2
@@ -51,7 +51,7 @@
 
 ## 架构与管线（RDT）
 
-推荐链路：`robotwin_rdt_server` + `robotwin_env_server` 在 RoboTwin 侧，RLinf 侧仅做 rollout/DSRL 训练并通过 TCP 调 expert。
+推荐链路：`robotwin_rdt_server` + `robotwin_env_server` 在 RoboTwin 侧；先用 frozen RDT 收集成功轨迹训练 LoRA adapter，再让 RLinf 侧做 rollout/DSRL 训练并通过 TCP 调 expert。
 
 | 组件 | 文件/配置 | 作用 |
 |------|-----------|------|
@@ -128,10 +128,27 @@ cd /workspace/RLinf/examples/embodiment
 # 终端 3：第一道门控，remote RDT policy smoke eval
 ./run_robotwin_rdt_post_training_gate.sh smoke-eval
 
-# 终端 3：第二道门控，RLinf 无噪声 rollout smoke
+# 终端 3：收集 frozen RDT 成功 episode，直接写 RDT processed HDF5
+RDT_SUCCESS_TARGET=50 RDT_SUCCESS_MAX_ATTEMPTS=200 \
+./run_robotwin_rdt_post_training_gate.sh collect-success-dataset
+
+# 终端 3：为每个成功 episode 生成 instructions/lang_embed_0.pt
+./run_robotwin_rdt_post_training_gate.sh prepare-success-dataset
+
+# 终端 3：训练 PEFT LoRA adapter，默认保存到 RoboTwin/policy/RDT/checkpoints/place_empty_cup_success_lora_170m/lora_adapter
+./run_robotwin_rdt_post_training_gate.sh train-lora
+
+# 终端 1：重启 RDT expert，挂载 LoRA adapter
+ROBOTWIN_RDT_LORA_ADAPTER=/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_success_lora_170m/lora_adapter \
+./run_robotwin_rdt_post_training_gate.sh start-rdt-server
+
+# 终端 3：LoRA 后 remote smoke
+./run_robotwin_rdt_post_training_gate.sh smoke-lora
+
+# 终端 3：LoRA 后第二道门控，RLinf 无噪声 rollout smoke
 ./run_robotwin_rdt_post_training_gate.sh zero-noise-smoke
 
-# 终端 3：第三道门控，打开 DSRL/SAC 小规模学习
+# 终端 3：LoRA + 无噪声 smoke 通过后，再打开 DSRL/SAC 小规模学习
 ./run_robotwin_rdt_post_training_gate.sh dsrl-smoke
 ```
 
@@ -237,16 +254,17 @@ python toolkits/eval_scripts_robotwin/eval_remote_rdt_smoke.py \
 
 ---
 
-## 4. RLinf 后训练 smoke（DSRL + 冻结 RDT）
+## 4. LoRA-first 后训练 smoke（成功轨迹 -> LoRA -> DSRL）
 
-这一节启动一个完整的 RLinf 后训练 smoke：RLinf 会连上两个 RoboTwin 服务，采集 rollout，写入 replay buffer，执行 SAC/Q 更新，并按配置保存 checkpoint。它不是最终收敛训练，而是验证“RDT 能产生可奖励轨迹、DSRL 头能参与学习、训练闭环能跑完”。
+这一节采用更保守的新后训练路径：先用冻结 RDT 收集足够多的成功轨迹，做一次离线 LoRA 修补；再把 LoRA adapter 挂到 `robotwin_rdt_server` 上做 smoke eval；最后才进入 DSRL/SAC。这样 DSRL 的起点不是原始 RDT，而是已经被成功轨迹拉回任务分布的 RDT-LoRA expert。
 
 后训练机制简述：
-- RDT 主模型冻结，仍由 `robotwin_rdt_server` 推理，不在 RLinf 训练进程里加载。
-- RLinf 训练的是一个轻量 DSRL steering 头，它根据当前图像和机器人状态输出 RDT diffusion 的 `init_noise`。
-- `robotwin_rdt_server` 用这个 `init_noise` 生成 64 步动作 chunk，`robotwin_env_server` 执行动作并返回 reward/success/debug trace。
-- SAC critic 学习“什么样的 `init_noise` 更容易触发 grasp/lift/place/success”，actor 再朝高 Q 的噪声方向更新。
-- 配置默认 `dsrl_noise_scale=0.0`，先强制 RLinf rollout 复现冻结 RDT expert；只有采到非零 reward / success 后，才在第三阶段显式切到 `0.05` 做 DSRL/SAC 学习。
+- 阶段 A：冻结 RDT 只做 remote rollout，先证明同一 checkpoint、同一 env、同一 server 能复现成功率。
+- 阶段 B：收集成功 episode，转换成 RDT finetune 所需 HDF5/语言 embedding 数据，形成成功轨迹池。
+- 阶段 C：用成功轨迹池训练小步 LoRA adapter，优先修补行为分布，不引入 RL 探索噪声。
+- 阶段 D：RDT server 加载 LoRA adapter，重新跑 remote smoke eval；成功率稳定后再作为 DSRL expert。
+- 阶段 E：RLinf 只训练轻量 DSRL steering 头，输出 RDT diffusion 的 `init_noise`；SAC critic 学习哪些 noise 更容易触发 `grasp/lift/place/success`。
+- 配置默认 `dsrl_noise_scale=0.0`，先强制 RLinf rollout 复现 RDT-LoRA expert；只有 LoRA 后 smoke 已经采到非零 reward / success，才显式切到 `0.05` 做 DSRL/SAC 学习。
 
 启动命令：
 
@@ -257,9 +275,59 @@ conda deactivate
 #启动uv环境
 source .venv/bin/activate
 ```
-### 4.1 三卡无噪声 smoke（物理 GPU 0/1/2）
+### 4.1 收集成功轨迹并训练 LoRA
 
-下面命令默认你已经执行完第 2 节环境变量导出，并已启动第 3 节两个服务：
+先用 `collect-success-dataset` 扩大 remote RDT rollout 数，目标是至少沉淀 `50-100` 条成功轨迹；调试链路时可以先设 `RDT_SUCCESS_TARGET=1`。采集发生在 RoboTwin env 侧：`place_empty_cup` 会记录每个 inner action 执行前的 `cam_high/cam_left_wrist/cam_right_wrist/qpos/action`，只有 episode success 后才写入 RDT processed HDF5。
+
+```bash
+cd /workspace/RLinf/examples/embodiment
+
+RDT_SUCCESS_TARGET=50 RDT_SUCCESS_MAX_ATTEMPTS=200 \
+./run_robotwin_rdt_post_training_gate.sh collect-success-dataset
+```
+
+默认输出：
+- 数据目录：`/workspace/RoboTwin/policy/RDT/training_data/place_empty_cup_rdt_success`
+- HDF5：`episode_N/episode_N.hdf5`
+- JSON：`episode_N/instruction.json`、`episode_N/metadata.json`
+
+```bash
+cd /workspace/RLinf/examples/embodiment
+
+# 为每个 episode 写 instructions/lang_embed_0.pt
+./run_robotwin_rdt_post_training_gate.sh prepare-success-dataset
+
+# 用 model_config/place_empty_cup_success_lora_170m.yml 训练 adapter-only LoRA
+./run_robotwin_rdt_post_training_gate.sh train-lora
+```
+
+`finetune.sh` 会读取 LoRA 字段，向 `main.py` 传 `--lora_enable`，只训练 PEFT adapter 参数，并把最终产物保存到 `checkpoints/place_empty_cup_success_lora_170m/lora_adapter`。失败 episode 不进入这个数据池，只保留 eval summary 用于排查。
+
+### 4.2 加载 LoRA adapter 并重新 smoke eval
+
+LoRA/修补 checkpoint 训练完成后，重启 RDT server。PEFT LoRA adapter 用下面命令挂载：
+
+```bash
+cd /workspace/RLinf/examples/embodiment
+
+ROBOTWIN_RDT_LORA_ADAPTER=/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_success_lora_170m/lora_adapter \
+ROBOTWIN_RDT_MERGE_LORA=1 \
+./run_robotwin_rdt_post_training_gate.sh start-rdt-server
+```
+
+然后重新跑 remote smoke eval：
+
+```bash
+cd /workspace/RLinf/examples/embodiment
+
+EPISODES=100 ./run_robotwin_rdt_post_training_gate.sh smoke-lora
+```
+
+如果 LoRA 后成功率没有高于原始 RDT，或者 reward milestone 反而退化，不进入 DSRL；先回滚 adapter，检查数据质量、action 语义和 HDF5 转换。
+
+### 4.3 RLinf 无噪声 smoke（RDT-LoRA + DSRL 关闭探索）
+
+下面命令默认你已经启动了带 LoRA adapter 的 `robotwin_rdt_server` 和 `robotwin_env_server`：
 
 ```bash
 cd /workspace/RLinf/examples/embodiment
@@ -293,12 +361,12 @@ CUDA_VISIBLE_DEVICES=2 python train_embodied_agent.py \
 - 确认训练进程、Ray worker 都只出现在物理 GPU `2`。
 - 确认能连通 `robotwin_rdt_server` 和 `robotwin_env_server`，能进入 rollout，并能打印 reward/action trace。
 - 每个 epoch 是一个 512-step rollout，刚好覆盖 `place_empty_cup` 的 500-step episode 上限；`runner.max_epochs=10` 约等价于跑 10 个完整训练 episode，并在每个 epoch 后执行轻量 SAC 更新。
-- 这个阶段必须保持 `actor.model.dsrl_noise_scale=0.0`。如果这里仍长期 `reward=0/success_once=0`，不要进入 DSRL 正式学习，先排查 RLinf rollout 的 history reset、reward 聚合、action chunk、camera/wrist 配置。
+- 这个阶段必须保持 `actor.model.dsrl_noise_scale=0.0`。如果这里仍长期 `reward=0/success_once=0`，不要进入 DSRL 正式学习，先排查 LoRA adapter 是否被 server 加载、RLinf rollout 的 history reset、reward 聚合、action chunk、camera/wrist 配置。
 - `+runner.keep_last_checkpoints=3` 使用 Hydra append 语法；当前配置是 struct 模式，写成 `runner.keep_last_checkpoints=3` 会报 `Key 'keep_last_checkpoints' is not in struct`。
 
-### 4.2 DSRL smoke（通过无噪声门控后）
+### 4.4 DSRL smoke（通过 LoRA 与无噪声门控后）
 
-无噪声 RLinf smoke 采到非零 reward / success 后，再打开小扰动和轻量 SAC 更新：
+RDT-LoRA remote smoke 和 RLinf 无噪声 smoke 都采到非零 reward / success 后，再打开小扰动和轻量 SAC 更新：
 
 ```bash
 cd /workspace/RLinf/examples/embodiment
@@ -315,9 +383,9 @@ algorithm.train_actor_steps=1 \
 algorithm.entropy_tuning.target_entropy=auto_half_action_dim
 ```
 
-### 4.3 后续正式训练（可选，物理 GPU 2-7）
+### 4.5 后续正式训练（可选，物理 GPU 2-7）
 
-remote RDT smoke、无噪声 RLinf smoke 和 DSRL smoke 都通过后，再考虑启动 6 卡正式训练：
+原始 RDT smoke、LoRA 后 smoke、无噪声 RLinf smoke 和 DSRL smoke 都通过后，再考虑启动 6 卡正式训练：
 
 ```bash
 cd /workspace/RLinf/examples/embodiment
@@ -353,7 +421,7 @@ CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python train_embodied_agent.py \
 - `actor.global_batch_size=48` 对齐 6 张训练卡和 `actor.micro_batch_size=8`，避免分布式 batch 不整除。
 - RDT smoke/正式训练默认保持 offload 关闭。当前 `actor.fsdp_config.use_orig_params=true` 时，开启 `actor/rollout.enable_offload=true` 在部分版本可能触发 FSDP writeback 的 shape mismatch（`Expects [flat] but got [matrix]`）。
 
-### 4.4 如何判断 smoke 有效
+### 4.6 如何判断 smoke 有效
 
 优先看 RoboTwin env server 的 debug 日志和 RLinf TensorBoard：
 - env server 日志里出现 `reward_components.events` 的 `grasp`、`lift`、`place`、`release`、`success`，说明模型在后训练 rollout 中做出了有奖励的正确片段。
@@ -361,11 +429,11 @@ CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python train_embodied_agent.py \
 - 即使暂时没有 `success`，只要 `grasp/lift/place` 里程碑开始出现，critic 就已经有非零奖励信号可学。
 - `q_data`、actor loss、alpha/entropy 不报 NaN，checkpoint 正常保存，说明 SAC 更新闭环已跑通。
 
-### 4.5 DSRL sweep 建议
+### 4.7 DSRL sweep 建议
 
 **64-step baseline**：保持 RDT server `--n-action-steps 64`，训练配置默认 `actor.model.num_action_chunks=64`。这是当前 smoke eval 已经出现成功样本的条件，优先用于后训练修补。
 
-默认 `actor.model.dsrl_noise_scale=0.0` 用于门控验证；通过 remote RDT smoke 和无噪声 RLinf smoke 后，再显式覆盖为 `0.05` 或做小范围 sweep。
+默认 `actor.model.dsrl_noise_scale=0.0` 用于门控验证；通过 LoRA 后 remote RDT smoke 和无噪声 RLinf smoke 后，再显式覆盖为 `0.05` 或做小范围 sweep。
 
 **8-step 稳定性对照**：RDT server 改为 `--n-action-steps 8`，RLinf 命令同步加：
 
@@ -390,7 +458,7 @@ runner.logger.experiment_name=robotwin_dsrl_rdt_4step
 - `auto_half_action_dim`：按完整 RDT latent noise 维度取 `-0.5 * action_dim`，当前默认。
 - 数值：例如 `-224`、`-448`、`-896`，用于正式 sweep。
 
-### 4.6 Reward trace
+### 4.8 Reward trace
 
 `place_empty_cup` 当前使用单调里程碑 reward：
 - `grasp`：夹爪接触杯子且对应夹爪不是 open，首次 `+0.5`。
@@ -400,22 +468,6 @@ runner.logger.experiment_name=robotwin_dsrl_rdt_4step
 - approach/place 仅保留正向 shaping，退步不给负分。
 
 训练配置默认打开 `debug_reward_trace` 和 `debug_action_trace`，RoboTwin server `--debug-level 2` 会在 `debug_trace.info_focus.reward_components.events` 中打印最近一步触发的里程碑事件。
-
-### 阶段3（预留）
-
-离线 LoRA 修补：使用 DSRL 成功轨迹、失败纠正轨迹和原始 SFT demo 混合做小步 MSE/SFT，保存 PEFT adapter。推理时启动：
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python script/robotwin_rdt_server.py \
-  --host 0.0.0.0 \
-  --port 8769 \
-  --ckpt /workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_only_170m/checkpoint-20000 \
-  --lora-adapter-path /workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_lora_adapter \
-  --merge-lora \
-  --device cuda:0 \
-  --instruction "Place the empty cup to the target area." \
-  --n-action-steps 64
-```
 
 ### 阶段4（预留）
 
