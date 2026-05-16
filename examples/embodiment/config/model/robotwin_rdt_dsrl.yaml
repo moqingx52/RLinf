@@ -21,9 +21,9 @@ is_lora: false
 lora_rank: 32
 
 use_dsrl: true
-# Start from a small perturbation of the 64-step RDT expert so rollout can still
-# collect occasional successful examples while SAC learns a correction.
-dsrl_noise_scale: 0.05
+# Gate the training path with zero-noise RDT rollout first. Switch to 0.05 only
+# after remote RDT smoke eval and zero-noise RLinf smoke both collect rewards.
+dsrl_noise_scale: ${oc.env:RLINF_RDT_DSRL_NOISE_SCALE,0.0}
 
 dsrl_state_dim: 14
 dsrl_image_latent_dim: 64

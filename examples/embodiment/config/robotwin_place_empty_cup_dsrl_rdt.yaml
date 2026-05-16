@@ -190,9 +190,9 @@ actor:
     # Full RDT denoising noise dim, independent of executed chunk length.
     dsrl_action_noise_dim: 896
     use_dsrl: true
-    # Keep early rollouts close to the smoke-eval RDT expert while still
-    # allowing SAC to learn a steering correction through init_noise.
-    dsrl_noise_scale: 0.05
+    # Default to zero-noise gating so RLinf rollout must first reproduce the
+    # frozen RDT expert. Set to 0.05 after smoke eval confirms non-zero reward.
+    dsrl_noise_scale: ${oc.env:RLINF_RDT_DSRL_NOISE_SCALE,0.0}
     add_q_head: true
     q_head_type: "default"
     num_q_heads: 10

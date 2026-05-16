@@ -75,9 +75,9 @@
 | RoboTwin | `/workspace/RoboTwin` |
 | RDT 训练配置 | `/workspace/RLinf/examples/embodiment/config/robotwin_place_empty_cup_dsrl_rdt.yaml` |
 | RDT 权重（示例） | `/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_only_170m/checkpoint-20000` |
-| RDT base 配置 | `/workspace/RoboTwin/policy/RDT/configs/base.yaml` |
-| Vision encoder（默认） | `/workspace/RoboTwin/weights/RDT/siglip-so400m-patch14-384` |
-| Text encoder（默认） | `/workspace/RoboTwin/weights/RDT/t5-v1_1-xxl` |
+| RDT base 配置 | `/workspace/RoboTwin/policy/RDT/configs/base_170m.yaml` |
+| Vision encoder（默认） | `/workspace/RoboTwin/policy/weights/RDT/siglip-so400m-patch14-384` |
+| Text encoder（默认） | `/workspace/RoboTwin/policy/weights/RDT/t5-v1_1-xxl` |
 
 ---
 
@@ -114,6 +114,27 @@ export PYOPENGL_PLATFORM=egl
 
 RDT 170M checkpoint 推荐传 checkpoint 目录即可，`robotwin_rdt_server.py` 会自动解析到 `pytorch_model/mp_rank_00_model_states.pt`，并在 checkpoint 路径包含 `170m` 时默认使用 `policy/RDT/configs/base_170m.yaml`。如果手动传 `--config`，以手动值为准。
 
+推荐使用统一 gate 脚本执行下面所有阶段，避免绕过 smoke 验证直接长跑 SAC：
+
+```bash
+cd /workspace/RLinf/examples/embodiment
+
+# 终端 1：RDT expert
+./run_robotwin_rdt_post_training_gate.sh start-rdt-server
+
+# 终端 2：RoboTwin env
+./run_robotwin_rdt_post_training_gate.sh start-env-server
+
+# 终端 3：第一道门控，remote RDT policy smoke eval
+./run_robotwin_rdt_post_training_gate.sh smoke-eval
+
+# 终端 3：第二道门控，RLinf 无噪声 rollout smoke
+./run_robotwin_rdt_post_training_gate.sh zero-noise-smoke
+
+# 终端 3：第三道门控，打开 DSRL/SAC 小规模学习
+./run_robotwin_rdt_post_training_gate.sh dsrl-smoke
+```
+
 ---
 
 ## 3. 启动 RoboTwin 服务（先于 RLinf）
@@ -142,6 +163,7 @@ CUDA_VISIBLE_DEVICES=0 python script/robotwin_rdt_server.py \
   --host 0.0.0.0 \
   --port 8769 \
   --ckpt /workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_only_170m/checkpoint-20000 \
+  --config /workspace/RoboTwin/policy/RDT/configs/base_170m.yaml \
   --vision-encoder-path /workspace/RoboTwin/policy/weights/RDT/siglip-so400m-patch14-384 \
   --text-encoder-path /workspace/RoboTwin/policy/weights/RDT/t5-v1_1-xxl \
   --device cuda:0 \
@@ -202,7 +224,7 @@ ROBOTWIN_RDT_CKPT=/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_onl
 python toolkits/eval_scripts_robotwin/eval_remote_rdt_smoke.py \
   --episodes 100 \
   --seed 0 \
-  --config /workspace/RoboTwin/task_config/demo_randomized.yml \
+  --config /workspace/RLinf/examples/embodiment/config/env/robotwin_place_empty_cup.yaml \
   --task-name place_empty_cup \
   --step-lim 500
 ```
@@ -224,7 +246,7 @@ python toolkits/eval_scripts_robotwin/eval_remote_rdt_smoke.py \
 - RLinf 训练的是一个轻量 DSRL steering 头，它根据当前图像和机器人状态输出 RDT diffusion 的 `init_noise`。
 - `robotwin_rdt_server` 用这个 `init_noise` 生成 64 步动作 chunk，`robotwin_env_server` 执行动作并返回 reward/success/debug trace。
 - SAC critic 学习“什么样的 `init_noise` 更容易触发 grasp/lift/place/success”，actor 再朝高 Q 的噪声方向更新。
-- 当前默认 `dsrl_noise_scale=0.05`，让初期 rollout 贴近 smoke eval 中已经能偶发成功的 RDT expert，同时保留小扰动供后训练学习。
+- 配置默认 `dsrl_noise_scale=0.0`，先强制 RLinf rollout 复现冻结 RDT expert；只有采到非零 reward / success 后，才在第三阶段显式切到 `0.05` 做 DSRL/SAC 学习。
 
 启动命令：
 
@@ -235,7 +257,7 @@ conda deactivate
 #启动uv环境
 source .venv/bin/activate
 ```
-### 4.1 三卡完整 smoke（物理 GPU 0/1/2）
+### 4.1 三卡无噪声 smoke（物理 GPU 0/1/2）
 
 下面命令默认你已经执行完第 2 节环境变量导出，并已启动第 3 节两个服务：
 
@@ -247,7 +269,7 @@ ROBOTWIN_RDT_SERVER_ADDR=127.0.0.1:8769 \
 CUDA_VISIBLE_DEVICES=2 python train_embodied_agent.py \
   --config-path /workspace/RLinf/examples/embodiment/config/ \
   --config-name robotwin_place_empty_cup_dsrl_rdt \
-  runner.logger.log_path=/workspace/RLinf/logs/dsrl-rdt-place-empty-cup-smoke-3gpu \
+  runner.logger.log_path=/workspace/RLinf/logs/dsrl-rdt-place-empty-cup-zero-noise-smoke \
   runner.max_epochs=10 \
   runner.save_interval=1 \
   +runner.keep_last_checkpoints=3 \
@@ -261,10 +283,8 @@ CUDA_VISIBLE_DEVICES=2 python train_embodied_agent.py \
   actor.enable_offload=false \
   actor.fsdp_config.gradient_checkpointing=true \
   rollout.collect_prev_infos=false \
-  actor.model.dsrl_noise_scale=0.05 \
-  algorithm.entropy_tuning.target_entropy=auto_half_action_dim \
-  algorithm.update_epoch=5 \
-  algorithm.train_actor_steps=1 \
+  actor.model.dsrl_noise_scale=0.0 \
+  actor.model.num_action_chunks=64 \
   env.train.max_steps_per_rollout_epoch=512 \
   env.eval.max_steps_per_rollout_epoch=512
 ```
@@ -273,12 +293,31 @@ CUDA_VISIBLE_DEVICES=2 python train_embodied_agent.py \
 - 确认训练进程、Ray worker 都只出现在物理 GPU `2`。
 - 确认能连通 `robotwin_rdt_server` 和 `robotwin_env_server`，能进入 rollout，并能打印 reward/action trace。
 - 每个 epoch 是一个 512-step rollout，刚好覆盖 `place_empty_cup` 的 500-step episode 上限；`runner.max_epochs=10` 约等价于跑 10 个完整训练 episode，并在每个 epoch 后执行轻量 SAC 更新。
-- 若只想确认训练链路能否复现无噪声 smoke 成功，可临时把 `actor.model.dsrl_noise_scale=0.0`；若要验证后训练学习路径，保持默认 `0.05`。
+- 这个阶段必须保持 `actor.model.dsrl_noise_scale=0.0`。如果这里仍长期 `reward=0/success_once=0`，不要进入 DSRL 正式学习，先排查 RLinf rollout 的 history reset、reward 聚合、action chunk、camera/wrist 配置。
 - `+runner.keep_last_checkpoints=3` 使用 Hydra append 语法；当前配置是 struct 模式，写成 `runner.keep_last_checkpoints=3` 会报 `Key 'keep_last_checkpoints' is not in struct`。
 
-### 4.2 后续正式训练（可选，物理 GPU 2-7）
+### 4.2 DSRL smoke（通过无噪声门控后）
 
-三卡 smoke 没有配置组合、连通性或显存问题后，再考虑启动 6 卡正式训练：
+无噪声 RLinf smoke 采到非零 reward / success 后，再打开小扰动和轻量 SAC 更新：
+
+```bash
+cd /workspace/RLinf/examples/embodiment
+
+./run_robotwin_rdt_post_training_gate.sh dsrl-smoke
+```
+
+等价关键覆盖：
+
+```bash
+actor.model.dsrl_noise_scale=0.05 \
+algorithm.update_epoch=5 \
+algorithm.train_actor_steps=1 \
+algorithm.entropy_tuning.target_entropy=auto_half_action_dim
+```
+
+### 4.3 后续正式训练（可选，物理 GPU 2-7）
+
+remote RDT smoke、无噪声 RLinf smoke 和 DSRL smoke 都通过后，再考虑启动 6 卡正式训练：
 
 ```bash
 cd /workspace/RLinf/examples/embodiment
@@ -314,7 +353,7 @@ CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python train_embodied_agent.py \
 - `actor.global_batch_size=48` 对齐 6 张训练卡和 `actor.micro_batch_size=8`，避免分布式 batch 不整除。
 - RDT smoke/正式训练默认保持 offload 关闭。当前 `actor.fsdp_config.use_orig_params=true` 时，开启 `actor/rollout.enable_offload=true` 在部分版本可能触发 FSDP writeback 的 shape mismatch（`Expects [flat] but got [matrix]`）。
 
-### 4.3 如何判断 smoke 有效
+### 4.4 如何判断 smoke 有效
 
 优先看 RoboTwin env server 的 debug 日志和 RLinf TensorBoard：
 - env server 日志里出现 `reward_components.events` 的 `grasp`、`lift`、`place`、`release`、`success`，说明模型在后训练 rollout 中做出了有奖励的正确片段。
@@ -322,11 +361,11 @@ CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python train_embodied_agent.py \
 - 即使暂时没有 `success`，只要 `grasp/lift/place` 里程碑开始出现，critic 就已经有非零奖励信号可学。
 - `q_data`、actor loss、alpha/entropy 不报 NaN，checkpoint 正常保存，说明 SAC 更新闭环已跑通。
 
-### 4.4 DSRL sweep 建议
+### 4.5 DSRL sweep 建议
 
 **64-step baseline**：保持 RDT server `--n-action-steps 64`，训练配置默认 `actor.model.num_action_chunks=64`。这是当前 smoke eval 已经出现成功样本的条件，优先用于后训练修补。
 
-默认 `actor.model.dsrl_noise_scale=0.05`，让 rollout 接近 smoke eval 的 RDT expert，同时保留少量可学习的 `init_noise` 扰动。若只想验证训练链路能否复现 smoke 成功，可临时加 `actor.model.dsrl_noise_scale=0.0`；正式学习再切回 `0.05` 或做小范围 sweep。
+默认 `actor.model.dsrl_noise_scale=0.0` 用于门控验证；通过 remote RDT smoke 和无噪声 RLinf smoke 后，再显式覆盖为 `0.05` 或做小范围 sweep。
 
 **8-step 稳定性对照**：RDT server 改为 `--n-action-steps 8`，RLinf 命令同步加：
 
@@ -351,7 +390,7 @@ runner.logger.experiment_name=robotwin_dsrl_rdt_4step
 - `auto_half_action_dim`：按完整 RDT latent noise 维度取 `-0.5 * action_dim`，当前默认。
 - 数值：例如 `-224`、`-448`、`-896`，用于正式 sweep。
 
-### 4.5 Reward trace
+### 4.6 Reward trace
 
 `place_empty_cup` 当前使用单调里程碑 reward：
 - `grasp`：夹爪接触杯子且对应夹爪不是 open，首次 `+0.5`。
