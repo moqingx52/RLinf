@@ -35,6 +35,7 @@ export ROBOTWIN_RDT_VISION_ENCODER="${ROBOTWIN_RDT_VISION_ENCODER:-${ROBOTWIN_RO
 export ROBOTWIN_RDT_TEXT_ENCODER="${ROBOTWIN_RDT_TEXT_ENCODER:-${ROBOTWIN_ROOT}/policy/weights/RDT/t5-v1_1-xxl}"
 export ROBOTWIN_RDT_LORA_ADAPTER="${ROBOTWIN_RDT_LORA_ADAPTER:-}"
 export ROBOTWIN_RDT_MERGE_LORA="${ROBOTWIN_RDT_MERGE_LORA:-1}"
+export ROBOTWIN_PLANNER_BACKEND="${ROBOTWIN_PLANNER_BACKEND:-curobo}"
 
 ENV_CONFIG="${ENV_CONFIG:-${REPO_PATH}/examples/embodiment/config/env/robotwin_place_empty_cup.yaml}"
 TASK_NAME="${TASK_NAME:-place_empty_cup}"
@@ -64,6 +65,7 @@ Commands:
                        Generate per-episode language embeddings for the collected HDF5 data.
   train-lora           Train a PEFT LoRA adapter on the collected success dataset.
   smoke-lora           Run remote smoke eval against a server started with the trained LoRA adapter.
+  debug-curobo         Check whether RoboTwin can import and instantiate the cuRobo planner module.
   zero-noise-smoke     Run RLinf rollout/SAC smoke with actor.model.dsrl_noise_scale=0.0.
   dsrl-smoke           Run RLinf DSRL smoke with actor.model.dsrl_noise_scale=0.05.
 
@@ -71,7 +73,7 @@ Important env overrides:
   ROBOTWIN_ROOT, ROBOTWIN_RDT_CKPT, ROBOTWIN_RDT_CONFIG
   ROBOTWIN_RDT_VISION_ENCODER, ROBOTWIN_RDT_TEXT_ENCODER
   ROBOTWIN_RDT_LORA_ADAPTER, ROBOTWIN_RDT_MERGE_LORA
-  ROBOTWIN_SERVER_ADDR, ROBOTWIN_RDT_SERVER_ADDR
+  ROBOTWIN_SERVER_ADDR, ROBOTWIN_RDT_SERVER_ADDR, ROBOTWIN_PLANNER_BACKEND
   RDT_SUCCESS_DATASET_DIR, RDT_SUCCESS_TARGET, RDT_SUCCESS_MAX_ATTEMPTS, RDT_SUCCESS_SEED_CHECK_MODE, RDT_LORA_CONFIG_NAME
   RDT_GPU, ENV_GPU, TRAIN_GPU, EPISODES, SEED, STEP_LIM
 USAGE
@@ -95,6 +97,7 @@ print_context() {
 [rdt-gate] ROBOTWIN_RDT_CKPT=${ROBOTWIN_RDT_CKPT}
 [rdt-gate] ROBOTWIN_RDT_CONFIG=${ROBOTWIN_RDT_CONFIG}
 [rdt-gate] ROBOTWIN_RDT_LORA_ADAPTER=${ROBOTWIN_RDT_LORA_ADAPTER:-<none>}
+[rdt-gate] ROBOTWIN_PLANNER_BACKEND=${ROBOTWIN_PLANNER_BACKEND}
 [rdt-gate] ENV_CONFIG=${ENV_CONFIG}
 [rdt-gate] RDT_ACTION_STEPS=${RDT_ACTION_STEPS}
 [rdt-gate] RDT_SUCCESS_DATASET_DIR=${RDT_SUCCESS_DATASET_DIR}
@@ -161,6 +164,7 @@ smoke_eval() {
     --config "${ENV_CONFIG}" \
     --task-name "${TASK_NAME}" \
     --step-lim "${STEP_LIM}" \
+    --planner-backend "${ROBOTWIN_PLANNER_BACKEND}" \
     "$@"
 }
 
@@ -176,6 +180,7 @@ collect_success_dataset() {
     --config "${ENV_CONFIG}" \
     --task-name "${TASK_NAME}" \
     --step-lim "${STEP_LIM}" \
+    --planner-backend "${ROBOTWIN_PLANNER_BACKEND}" \
     --seed-check-mode "${RDT_SUCCESS_SEED_CHECK_MODE}" \
     --collect-success-dataset-dir "${RDT_SUCCESS_DATASET_DIR}" \
     --target-successes "${RDT_SUCCESS_TARGET}" \
@@ -211,6 +216,26 @@ smoke_lora() {
   fi
   echo "[rdt-gate] smoke-lora expects start-rdt-server to be running with ROBOTWIN_RDT_LORA_ADAPTER=${ROBOTWIN_RDT_LORA_ADAPTER}" >&2
   smoke_eval "$@"
+}
+
+debug_curobo() {
+  print_context
+  cd "${ROBOTWIN_ROOT}"
+  env CUDA_VISIBLE_DEVICES="${ENV_GPU}" python - <<'PY'
+import inspect
+from envs.robot import planner
+
+print("[rdt-gate] CuroboPlanner defined:", hasattr(planner, "CuroboPlanner"))
+if hasattr(planner, "CuroboPlanner"):
+    print("[rdt-gate] CuroboPlanner:", planner.CuroboPlanner)
+    print("[rdt-gate] CuroboPlanner.plan_path:", inspect.signature(planner.CuroboPlanner.plan_path))
+try:
+    import curobo
+    print("[rdt-gate] curobo module:", getattr(curobo, "__file__", curobo))
+except Exception as exc:
+    print("[rdt-gate] curobo import failed:", repr(exc))
+    raise
+PY
 }
 
 train_common() {
@@ -284,6 +309,9 @@ case "$cmd" in
     ;;
   smoke-lora)
     smoke_lora "$@"
+    ;;
+  debug-curobo)
+    debug_curobo "$@"
     ;;
   zero-noise-smoke)
     zero_noise_smoke "$@"

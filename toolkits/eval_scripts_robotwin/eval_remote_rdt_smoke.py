@@ -261,6 +261,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--step-lim", type=int, default=None)
     parser.add_argument(
+        "--planner-backend",
+        choices=("curobo", "mplib"),
+        default=os.environ.get("ROBOTWIN_PLANNER_BACKEND", None),
+        help="Override task_config.planner_backend before creating the remote RoboTwin env.",
+    )
+    parser.add_argument(
         "--no-expert-check",
         action="store_true",
         help="Do not filter seeds through RoboTwin play_once success before policy eval.",
@@ -297,6 +303,8 @@ def main() -> None:
         camera_cfg = dict(task_config.get("camera") or {})
         camera_cfg["collect_wrist_camera"] = True
         task_config["camera"] = camera_cfg
+    if args.planner_backend:
+        task_config["planner_backend"] = args.planner_backend
     max_steps = int(args.max_steps or task_config.get("step_lim", 200))
     start_seed = int(
         args.start_seed if args.start_seed is not None else 100000 * (1 + args.seed)
@@ -330,6 +338,7 @@ def main() -> None:
         print(
             f"[rdt-smoke] task={task_config.get('task_name')} episodes={args.episodes} "
             f"start_seed={start_seed} max_steps={max_steps} "
+            f"planner_backend={task_config.get('planner_backend')} "
             f"seed_check_mode={seed_check_mode} "
             f"collect_success_dataset_dir={task_config.get('rdt_success_dataset_dir', '')}",
             flush=True,
