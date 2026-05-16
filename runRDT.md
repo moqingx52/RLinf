@@ -206,7 +206,7 @@ cd /workspace/RoboTwin
 CUDA_VISIBLE_DEVICES=1 python script/robotwin_env_server.py \
   --host 0.0.0.0 \
   --port 8765 \
-  --config /workspace/RLinf/examples/embodiment/config/env/robotwin_place_empty_cup.yaml \
+  --config /workspace/RoboTwin/task_config/demo_randomized.yml \
   --assets-path /workspace/RoboTwin/ \
   --debug-level 2 \
   --debug-every 1
@@ -241,7 +241,7 @@ ROBOTWIN_RDT_CKPT=/workspace/RoboTwin/policy/RDT/checkpoints/place_empty_cup_onl
 python toolkits/eval_scripts_robotwin/eval_remote_rdt_smoke.py \
   --episodes 100 \
   --seed 0 \
-  --config /workspace/RLinf/examples/embodiment/config/env/robotwin_place_empty_cup.yaml \
+  --config /workspace/RoboTwin/task_config/demo_randomized.yml \
   --task-name place_empty_cup \
   --step-lim 500
 ```

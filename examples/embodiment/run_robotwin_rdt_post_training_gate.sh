@@ -37,7 +37,10 @@ export ROBOTWIN_RDT_LORA_ADAPTER="${ROBOTWIN_RDT_LORA_ADAPTER:-}"
 export ROBOTWIN_RDT_MERGE_LORA="${ROBOTWIN_RDT_MERGE_LORA:-1}"
 export ROBOTWIN_PLANNER_BACKEND="${ROBOTWIN_PLANNER_BACKEND:-curobo}"
 
-ENV_CONFIG="${ENV_CONFIG:-${REPO_PATH}/examples/embodiment/config/env/robotwin_place_empty_cup.yaml}"
+# Use the RoboTwin task config that matches the official RDT eval distribution.
+# The generic RLinf env yaml is piper/no-wrist by default; RDT was trained/evaled
+# with aloha-agilex and head/right/left wrist cameras.
+ENV_CONFIG="${ENV_CONFIG:-${ROBOTWIN_ROOT}/task_config/demo_randomized.yml}"
 TASK_NAME="${TASK_NAME:-place_empty_cup}"
 STEP_LIM="${STEP_LIM:-500}"
 EPISODES="${EPISODES:-100}"

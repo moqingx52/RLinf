@@ -172,15 +172,20 @@ def _run_episode(
             raise RuntimeError("RoboTwin observation does not contain state")
         left_wrist = obs.get("left_wrist_image")
         right_wrist = obs.get("right_wrist_image")
+        if left_wrist is None or right_wrist is None:
+            raise RuntimeError(
+                "Remote RDT smoke requires wrist cameras. Use a RoboTwin task config "
+                "with camera.collect_wrist_camera=true, for example "
+                "${ROBOTWIN_ROOT}/task_config/demo_randomized.yml."
+            )
 
         predict_kwargs = {}
-        if left_wrist is not None and right_wrist is not None:
-            predict_kwargs["left_wrist_images"] = np.expand_dims(
-                np.asarray(left_wrist), axis=0
-            )
-            predict_kwargs["right_wrist_images"] = np.expand_dims(
-                np.asarray(right_wrist), axis=0
-            )
+        predict_kwargs["left_wrist_images"] = np.expand_dims(
+            np.asarray(left_wrist), axis=0
+        )
+        predict_kwargs["right_wrist_images"] = np.expand_dims(
+            np.asarray(right_wrist), axis=0
+        )
 
         actions = expert.predict(
             np.expand_dims(np.asarray(main_image), axis=0),
