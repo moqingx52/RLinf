@@ -52,6 +52,11 @@ RDT_SUCCESS_MAX_ATTEMPTS="${RDT_SUCCESS_MAX_ATTEMPTS:-200}"
 RDT_SUCCESS_SEED_CHECK_MODE="${RDT_SUCCESS_SEED_CHECK_MODE:-setup}"
 RDT_LORA_CONFIG_NAME="${RDT_LORA_CONFIG_NAME:-place_empty_cup_success_lora_170m}"
 RDT_LORA_ADAPTER_DEFAULT="${ROBOTWIN_ROOT}/policy/RDT/checkpoints/${RDT_LORA_CONFIG_NAME}/lora_adapter"
+RDT_EXPERT_TASK_CONFIG="${RDT_EXPERT_TASK_CONFIG:-$(basename "${ENV_CONFIG%.*}")}"
+RDT_EXPERT_DATA_NUM="${RDT_EXPERT_DATA_NUM:-${RDT_SUCCESS_TARGET}}"
+RDT_EXPERT_EPISODE_NUM="${RDT_EXPERT_EPISODE_NUM:-${RDT_EXPERT_DATA_NUM}}"
+RDT_EXPERT_GPU="${RDT_EXPERT_GPU:-${ENV_GPU}}"
+RDT_EXPERT_PROCESS_GPU="${RDT_EXPERT_PROCESS_GPU:-${RDT_GPU}}"
 
 usage() {
   cat <<'USAGE'
@@ -64,6 +69,8 @@ Commands:
   smoke-eval           Run remote RDT policy smoke eval before any RLinf training.
   collect-success-dataset
                        Collect successful remote RDT episodes as processed RDT HDF5 data.
+  collect-expert-dataset
+                       Collect official RoboTwin expert demos, convert to RDT format, and add them to the LoRA dataset.
   prepare-success-dataset
                        Generate per-episode language embeddings for the collected HDF5 data.
   train-lora           Train a PEFT LoRA adapter on the collected success dataset.
@@ -78,6 +85,7 @@ Important env overrides:
   ROBOTWIN_RDT_LORA_ADAPTER, ROBOTWIN_RDT_MERGE_LORA
   ROBOTWIN_SERVER_ADDR, ROBOTWIN_RDT_SERVER_ADDR, ROBOTWIN_PLANNER_BACKEND
   RDT_SUCCESS_DATASET_DIR, RDT_SUCCESS_TARGET, RDT_SUCCESS_MAX_ATTEMPTS, RDT_SUCCESS_SEED_CHECK_MODE, RDT_LORA_CONFIG_NAME
+  RDT_EXPERT_TASK_CONFIG, RDT_EXPERT_DATA_NUM, RDT_EXPERT_EPISODE_NUM, RDT_EXPERT_GPU, RDT_EXPERT_PROCESS_GPU
   RDT_GPU, ENV_GPU, TRAIN_GPU, EPISODES, SEED, STEP_LIM
 USAGE
 }
@@ -106,7 +114,53 @@ print_context() {
 [rdt-gate] RDT_SUCCESS_DATASET_DIR=${RDT_SUCCESS_DATASET_DIR}
 [rdt-gate] RDT_SUCCESS_SEED_CHECK_MODE=${RDT_SUCCESS_SEED_CHECK_MODE}
 [rdt-gate] RDT_LORA_CONFIG_NAME=${RDT_LORA_CONFIG_NAME}
+[rdt-gate] RDT_EXPERT_TASK_CONFIG=${RDT_EXPERT_TASK_CONFIG}
+[rdt-gate] RDT_EXPERT_DATA_NUM=${RDT_EXPERT_DATA_NUM}
+[rdt-gate] RDT_EXPERT_EPISODE_NUM=${RDT_EXPERT_EPISODE_NUM}
+[rdt-gate] RDT_EXPERT_GPU=${RDT_EXPERT_GPU}
+[rdt-gate] RDT_EXPERT_PROCESS_GPU=${RDT_EXPERT_PROCESS_GPU}
 EOF
+}
+
+yaml_episode_num() {
+  local config_path="$1"
+  python - "$config_path" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    payload = yaml.safe_load(f) or {}
+print(int(payload.get("episode_num", 0)))
+PY
+}
+
+ensure_expert_task_config() {
+  local source_name="$1"
+  local episode_num="$2"
+  local source_path="${ROBOTWIN_ROOT}/task_config/${source_name}.yml"
+  require_file_or_dir "${source_path}" "RoboTwin expert task config"
+
+  local source_episode_num
+  source_episode_num="$(yaml_episode_num "${source_path}")"
+  if [ "${episode_num}" -le "${source_episode_num}" ]; then
+    echo "${source_name}"
+    return
+  fi
+
+  local generated_name="${source_name}_expert_${episode_num}"
+  local generated_path="${ROBOTWIN_ROOT}/task_config/${generated_name}.yml"
+  python - "$source_path" "$generated_path" "$episode_num" <<'PY'
+import sys
+import yaml
+
+source_path, generated_path, episode_num = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with open(source_path, "r", encoding="utf-8") as f:
+    payload = yaml.safe_load(f) or {}
+payload["episode_num"] = episode_num
+with open(generated_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+PY
+  echo "${generated_name}"
 }
 
 start_rdt_server() {
@@ -189,6 +243,51 @@ collect_success_dataset() {
     --target-successes "${RDT_SUCCESS_TARGET}" \
     --max-attempts "${RDT_SUCCESS_MAX_ATTEMPTS}" \
     "$@"
+}
+
+collect_expert_dataset() {
+  require_file_or_dir "${ROBOTWIN_ROOT}/collect_data.sh" "RoboTwin expert collector"
+  require_file_or_dir "${ROBOTWIN_ROOT}/policy/RDT/process_data_rdt.sh" "RDT data processor"
+  require_file_or_dir "${ROBOTWIN_ROOT}/policy/RDT/scripts/copy_processed_to_training_data.sh" "RDT training data copy script"
+
+  local task_config
+  task_config="$(ensure_expert_task_config "${RDT_EXPERT_TASK_CONFIG}" "${RDT_EXPERT_EPISODE_NUM}")"
+  local raw_data_dir="${ROBOTWIN_ROOT}/data/${TASK_NAME}/${task_config}/data"
+  local processed_dir="processed_data/${TASK_NAME}-${task_config}-${RDT_EXPERT_DATA_NUM}"
+  local processed_abs="${ROBOTWIN_ROOT}/policy/RDT/${processed_dir}"
+  local training_root="${ROBOTWIN_ROOT}/policy/RDT/training_data"
+  local dest_base
+  dest_base="$(basename "${processed_dir}")"
+
+  print_context
+  echo "[rdt-gate] Collecting official expert data: task=${TASK_NAME} task_config=${task_config} episodes=${RDT_EXPERT_EPISODE_NUM}" >&2
+  cd "${ROBOTWIN_ROOT}"
+  bash collect_data.sh "${TASK_NAME}" "${task_config}" "${RDT_EXPERT_GPU}" "$@"
+
+  require_file_or_dir "${raw_data_dir}" "collected RoboTwin expert data"
+  echo "[rdt-gate] Converting official expert data to RDT format: num=${RDT_EXPERT_DATA_NUM}" >&2
+  cd "${ROBOTWIN_ROOT}/policy/RDT"
+  bash process_data_rdt.sh "${TASK_NAME}" "${task_config}" "${RDT_EXPERT_DATA_NUM}" "${RDT_EXPERT_PROCESS_GPU}"
+  require_file_or_dir "${processed_abs}" "processed RDT expert dataset"
+
+  mkdir -p "${RDT_SUCCESS_DATASET_DIR}"
+  if [[ "${RDT_SUCCESS_DATASET_DIR}" == "${training_root}/"* ]]; then
+    local run_name="${RDT_SUCCESS_DATASET_DIR#${training_root}/}"
+    local default_dest="${training_root}/${run_name}/${dest_base}"
+    if [ -d "${default_dest}" ]; then
+      cp -a "${processed_abs}/." "${default_dest}/"
+      echo "Merged ${processed_abs} -> ${default_dest}"
+    else
+      bash scripts/copy_processed_to_training_data.sh "${run_name}" "${processed_dir}"
+    fi
+  else
+    local dest_dir="${RDT_SUCCESS_DATASET_DIR}/${dest_base}"
+    mkdir -p "${dest_dir}"
+    cp -a "${processed_abs}/." "${dest_dir}/"
+    echo "Copied ${processed_abs} -> ${dest_dir}"
+  fi
+
+  echo "[rdt-gate] Expert RDT dataset is available under ${RDT_SUCCESS_DATASET_DIR}/${dest_base}" >&2
 }
 
 prepare_success_dataset() {
@@ -303,6 +402,9 @@ case "$cmd" in
     ;;
   collect-success-dataset)
     collect_success_dataset "$@"
+    ;;
+  collect-expert-dataset)
+    collect_expert_dataset "$@"
     ;;
   prepare-success-dataset)
     prepare_success_dataset "$@"
